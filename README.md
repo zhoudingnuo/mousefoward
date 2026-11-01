@@ -93,6 +93,21 @@ powershell -File tools/capture.ps1 -Loops 10      # 跑 10 圈
 
 桌面上放一个快捷方式指向这条命令，双击即跑轨迹并打印判断。
 
+## 转发（事件驱动）
+
+```powershell
+powershell -File tools/forward.ps1                # 转发
+powershell -File tools/forward.ps1 -Debug         # 每 50 包打印 + 每 200 包读一次状态行（含帧率）
+powershell -File tools/forward.ps1 -SelfTest      # 不接串口，直接验证映射和拆分
+powershell -File tools/forward.ps1 -NoKeyboard    # 只转发鼠标
+```
+
+`capture.ps1 -Live` 每 60 ms 读一次光标，上限 16.7 包/秒，而且没有键盘采集。`forward.ps1` 不轮询：注册 Raw Input（`WM_INPUT` + `RIDEV_INPUTSINK`），系统每来一个事件就出一个包，包率 = 系统事件率（鼠标一般 125~1000 Hz）。增量超过 ±127 拆成多个包（中间的包只带移动，最后一个带按键和滚轮），键盘按 VKey → HID usage 出 6KRO 快照。
+
+`-SelfTest` 只能验映射和拆分：这台机器上 `RIDEV_EXINPUTSINK` 被拒（错误 87），`SendInput` 注入的事件到不了 Raw Input，所以事件路径要靠真的操作鼠标键盘。
+
+桌面快捷方式指向这条。
+
 ## 目录
 
 | 文件 | 说明 |
@@ -107,4 +122,5 @@ powershell -File tools/capture.ps1 -Loops 10      # 跑 10 圈
 | `analysis.md` | 失败分析（上一版为什么报 Code 43，v3 为什么跑不通） |
 | `tools/send_test.ps1` | 直接往 COM 口发包 |
 | `tools/capture.ps1` | 跑写死的轨迹（一个圆）+ 读状态行，判断链路断在哪一段 |
+| `tools/forward.ps1` | 事件驱动转发：Raw Input 取鼠标/键盘事件，一个事件一个包 |
 | `tools/status_test.ps1` | 阻塞读状态行（`ReadExisting()` 读不到，必须挂一个读请求） |

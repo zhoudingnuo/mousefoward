@@ -297,3 +297,70 @@ ok=30 err=0 drop=0 ms=27 kb=3 p0=1 p1=1
 转发脚本加了 `-Debug`：每包打印十六进制，每 20 包读一次状态行。桌面快捷方式现在跑 `-Live -Debug`。
 
 单进程验证转发逻辑（读光标、移动、发增量、读状态行）：发 5 包，`ok` 和 `ms` 各涨 5。跨进程验证不了——后台进程和前台进程看到的是不同的光标（不同 winstation），这不是脚本的问题。
+
+---
+
+## 四、帧率和键盘：这一版改的是 PC 侧，不是固件
+
+现象：鼠标能动，键盘不动，帧率低。三条都是采集脚本的问题，固件不用改——`main.c` 的键盘分支和 62 字节报告描述符是对的，`p0=1` 和 `kb` 会涨也说明那台机器确实在轮询 EP1。缺的是把本端的动作读出来送进去。
+
+### 1. 帧率低的量化原因
+
+`capture.ps1 -Live` 每 60 ms 读一次光标位置，所以上限是 16.7 包/秒。设备侧不是瓶颈：鼠标端点的 `bInterval = 1`（配置描述符里 `07 05 82 03 08 00 01`），主机每 1 ms 轮询一次 EP2；键盘端点是 10 ms。也就是说 16 fps 完全是采集端算出来的，不是链路的上限。
+
+参考实现（`raw_mouse.py`）不轮询：`RegisterRawInputDevices` + `WM_INPUT`，系统每来一个鼠标事件就出一个包，包率 = 系统事件率（125~1000 Hz）。`tools/forward.ps1` 按这个做法重写。
+
+顺带两处：
+
+- 增量超过 ±127 以前被 `Clamp127` 直接夹掉，一次大移动会丢坐标。参考的 `encode_packets` 是拆成多个包，中间的包只带移动，最后一个带按键和滚轮。改成拆分。
+- `capture.ps1` 没有任何键盘采集，键盘通路只有手动跑 `.kb.ps1` 时才被用到。改成 Raw Input 的 VKey → HID usage，每次按下/释放发一次 6KRO 快照（参考的 `keyboard_monitor`）。
+
+### 2. 实测（本机，板子接着）
+
+采集路径走通：
+
+```
+注册 成功 atom=49998 hwnd=3933252
+状态行: S b=10 cdc=1 hs=1 ok=220 err=0 drop=0 ms=217 kb=3 p0=1 p1=1
+```
+
+映射抽查 6 个都对（`a`→0x04、ctrl→0xE0、Enter→0x28、空格→0x2C、`0`→0x27、F1→0x3E）。
+
+拆分 `(200, -160, 3)` 出 2 个包，两段相加还原成 200 / -160，只有最后一个带滚轮：
+
+```
+AA 00 64 B0 00 7E      dx=100 dy=-80
+AA 40 64 B0 03 3D      dx=100 dy=-80 wheel=3
+```
+
+键盘快照：按下 a、按下 ctrl、释放，每步一次完整状态：
+
+```
+AB 00 00 04 00 00 00 00 00 AF     a
+AB 01 00 04 00 00 00 00 00 AE     a + ctrl
+AB 01 00 00 00 00 00 00 00 AA     释放 a
+AB 00 00 00 00 00 00 00 00 AB     全 0
+```
+
+事件路径本身没法自己喂自己：注入的事件收不到（下面第 4 条），所以真实包率只能靠真的操作鼠标来量。
+
+### 3. 三个实现上的坑
+
+- `WNDCLASSEX` 的字段顺序是 `lpszMenuName` 在 `lpszClassName` 之前。写反了以后 `RegisterClassEx` 报错误 87——类名从空槽里读。
+- WndProc 的函数体里不能直接调 P/Invoke。`GetFunctionPointerForDelegate` 对这种方法返回的不是真正的非托管 thunk：`RegisterClassEx` 照样返回 atom，但 `CreateWindowEx` 返回 0 且不设错误码。把调用挪到一个普通方法里（`HandleInput(lParam)`）就好了，同一个类、只改函数体就能建窗口。
+- PowerShell 对集合的成员访问会走"成员枚举"，`$q.Dequeue()` 被套到每个元素上，报 `[System.Byte]` 没有 `Dequeue`。取队列要用 `TryDequeue([ref])`。
+
+### 4. `RIDEV_EXINPUTSINK` 在这台机器上被拒
+
+`RIDEV_EXINPUTSINK`（0x10）本来是用来收 `SendInput` 注入的事件的。实测单个和组合都试过：
+
+```
+mouse flags=0x100 ok=True    flags=0x10 ok=False err=87    flags=0x110 ok=False err=87
+keyboard 同样
+```
+
+所以注入的事件收不到，`-SelfTest` 不能走事件路径，只能直接调映射和拆分。注册只用 `RIDEV_INPUTSINK`（焦点不在本进程也收）。
+
+### 5. 状态行会拖慢转发
+
+读状态行会挂住最多 `ReadTimeoutMs`（1.5 秒）。以前是每 20 包读一次，按 125 包/秒算每 160 ms 就停一下。改成只在没有包要发的时候读，默认 200 包一次；空闲等待也从 20 ms 降到 5 ms。
