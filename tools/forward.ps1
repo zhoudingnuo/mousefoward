@@ -176,6 +176,26 @@ try
         }
         if( -not $bad ) { Write-Output '  都对。' }
 
+        # 结构布局: 按 C 的布局手工摆字节, 走的是和真事件同一条路。
+        # RAWMOUSE 的 union 是 4 字节对齐的, usFlags 后面有 2 字节填充; RAWKEYBOARD 的
+        # MakeCode / Flags 是 UINT。这两条以前都写短了(见 analysis.md 第七节)。
+        Write-Output '结构布局:'
+        Write-Output ( '  ' + [RawCap]::Layout() )
+        [RawCap]::Reset()
+        $m = New-Object -TypeName byte[] -ArgumentList 24
+        $m[4] = 0x01                                                   # usButtonFlags = 左键按下
+        $m[12] = 5                                                    # lLastX = 5
+        $m[16] = 253; $m[17] = 255; $m[18] = 255; $m[19] = 255      # lLastY = -3
+        [RawCap]::FeedImage( $m, 0 )
+        while( $true ) { $pk = Take $q; if( -not $pk ) { break }; Write-Output ( '  包: ' + ( Hex $pk ) ) }
+
+        $k = New-Object -TypeName byte[] -ArgumentList 20
+        $k[10] = 0x41                                                 # VKey = 'a', Flags = 0 -> 按下
+        [RawCap]::FeedImage( $k, 1 )
+        $k[4] = 1                                                    # Flags = 1 -> 抬起
+        [RawCap]::FeedImage( $k, 1 )
+        while( $true ) { $pk = Take $q; if( -not $pk ) { break }; Write-Output ( '  包: ' + ( Hex $pk ) ) }
+
         # 按下→抬起: 状态必须写回并保持, 不然每一包的按钮都是 0(点击转不过去)。
         Write-Output '鼠标按键(按下左键, 然后释放):'
         [RawCap]::Reset()

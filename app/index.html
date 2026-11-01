@@ -32,10 +32,20 @@
   #verdict { margin-top: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px;
             background: var(--panel); font-size: 13px; white-space: pre-wrap; }
   #verdict.bad { border-color: #a04a4a; color: #e88b8b; }
+
+  /* 锁定时整屏变黑(参考实现是一个全屏抓输入的面屏)。页面就是那块面板:
+   * 采集走的是 Raw Input(RIDEV_INPUTSINK), 和焦点在哪个窗口无关, 所以黑屏期间转发照旧。 */
+  .screen { position: fixed; inset: 0; background: #000; display: flex; flex-direction: column;
+           align-items: center; justify-content: center; gap: 16px; }
+  .screen.hidden, .wrap.hidden { display: none; }
+  .screen .slot { width: 320px; }
+  .screen .mini { color: #6f7780; font-family: Consolas, monospace; font-size: 13px; }
+  .screen .esc { color: #454b53; font-size: 12px; }
+  .hidden { display: none; }
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="wrap" id="panel">
   <h1>鼠标转发 · 锁定</h1>
   <div class="sub">本端 → 板子(USBFS CDC) → 另一台机器(USBHS HID)</div>
 
@@ -56,11 +66,34 @@
   <div id="verdict">还没有状态行。安静 5 秒以后才会读(转发的路上不能读: 那是一个会挂住的往返)。</div>
 </div>
 
+<div class="screen hidden" id="screen">
+  <div class="slot" id="slot"></div>
+  <div class="mini" id="mini">—</div>
+  <div class="esc">按 Esc 退出</div>
+</div>
+
 <script>
 const btn = document.getElementById('lock');
 const dot = document.getElementById('dot');
 const stateText = document.getElementById('state');
 const verdict = document.getElementById('verdict');
+const panel = document.getElementById('panel');
+const screen = document.getElementById('screen');
+const slot = document.getElementById('slot');
+const mini = document.getElementById('mini');
+const home = btn.parentNode;          // 只有一个按钮: 锁定时把它搬到黑屏里, 解锁时搬回来
+
+function showLock(on) {
+  if (on) {
+    panel.classList.add('hidden');
+    screen.classList.remove('hidden');
+    slot.appendChild(btn);
+  } else {
+    screen.classList.add('hidden');
+    panel.classList.remove('hidden');
+    home.appendChild(btn);
+  }
+}
 
 async function api(path, body) {
   const opt = { method: body ? 'POST' : 'GET' };
@@ -77,6 +110,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 let locked = false;
+let wasLocked = false;
 
 function set(id, text, neg) {
   const el = document.getElementById(id);
@@ -89,6 +123,7 @@ async function poll() {
   try { d = await (await fetch('/api/state')).json(); } catch (e) { return; }
 
   locked = d.lock;
+  if (locked !== wasLocked) { showLock(locked); wasLocked = locked; }
   btn.textContent = locked ? '🔓 锁定 (开) — 按 Esc 退出' : '🔒 锁定 (关)';
   btn.className = locked ? 'on' : '';
   dot.className = locked ? 'dot warn' : 'dot';
@@ -100,6 +135,7 @@ async function poll() {
   set('cap', d.capture.registered ? '已注册 ' + d.capture.nInput + ' 个事件' : '未注册: ' + d.capture.stage);
   set('cursor', d.cursor ? d.cursor.x + ',' + d.cursor.y : '—');
   set('recenter', d.recenter);
+  mini.textContent = d.rate + ' 包/秒 · ' + d.sent.total + ' 包 · 拉回中心 ' + d.recenter;
 
   if (d.verdict) {
     verdict.textContent = d.verdict;

@@ -43,14 +43,16 @@ public class RawCap {
 
     [StructLayout(LayoutKind.Sequential)]
     struct RAWMOUSE {
-        public ushort usFlags; public ushort usButtonFlags; public ushort usButtonData;
+        public ushort usFlags; public ushort pad;          // C 在这里放 2 字节填充: 后面的 union 是 4 字节对齐
+        public ushort usButtonFlags; public ushort usButtonData;
         public uint ulRawButtons; public int lLastX; public int lLastY; public uint ulExtraInformation;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     struct RAWKEYBOARD {
-        public ushort MakeCode; public ushort Flags; public ushort Reserved;
-        public ushort VKey; public uint ScanCode; public uint ExtraInformation;
+        public uint MakeCode; public uint Flags;
+        public ushort Reserved; public ushort VKey;
+        public uint Message; public uint ExtraInformation;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -293,6 +295,28 @@ public class RawCap {
             case 0x25: return 0x55; case 0x26: return 0x52; case 0x27: return 0x53; case 0x28: return 0x54;
         }
         return -1;
+    }
+
+    /* 自测: 按 C 的布局手工摆字节, 走的是和真事件同一条路。
+     * 这条本来能挡住 RAWMOUSE / RAWKEYBOARD 的布局错误(见 analysis.md 第七节)。 */
+    public static void FeedImage(byte[] laid, int type) {
+        IntPtr p = Marshal.AllocHGlobal(laid.Length);
+        try {
+            Marshal.Copy(laid, 0, p, laid.Length);
+            if (type == 0) HandleMouse((RAWMOUSE)Marshal.PtrToStructure(p, typeof(RAWMOUSE)));
+            else HandleKey((RAWKEYBOARD)Marshal.PtrToStructure(p, typeof(RAWKEYBOARD)));
+        } finally {
+            Marshal.FreeHGlobal(p);
+        }
+    }
+
+    public static string Layout() {
+        return "RAWMOUSE size=" + Marshal.SizeOf(typeof(RAWMOUSE)) +
+               " usButtonFlags@" + Marshal.OffsetOf(typeof(RAWMOUSE), "usButtonFlags") +
+               " lLastX@" + Marshal.OffsetOf(typeof(RAWMOUSE), "lLastX") +
+               " | RAWKEYBOARD size=" + Marshal.SizeOf(typeof(RAWKEYBOARD)) +
+               " Flags@" + Marshal.OffsetOf(typeof(RAWKEYBOARD), "Flags") +
+               " VKey@" + Marshal.OffsetOf(typeof(RAWKEYBOARD), "VKey");
     }
 
     public static void Reset() {

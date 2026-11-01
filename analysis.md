@@ -420,3 +420,44 @@ static void HandleMouse(RAWMOUSE m) {
 
 第一包是按下（flags=01），第二包是抬起（flags=00），第三包只给坐标、包里带仍然按着的右键。校验和也对得上（`AA^01=AB`，`AA^00=AA`，`AA^02^05=AD`）。
 
+
+---
+
+## 七、第二个原因：Raw Input 的结构声明比真实的短
+
+修了 `_mflags` 以后点击还是没反应。原因是 `tools/lib.ps1` 里 `RAWMOUSE` 的字段偏移和 C 的真实布局差 2 字节。
+
+C 里 `usFlags` 后面是一个 union，union 里有一个 `ULONG`，所以 union 是 4 字节对齐的 —— `usFlags` 后面有 2 字节填充，`usButtonFlags` 在偏移 4：
+
+```c
+typedef struct tagRAWMOUSE {
+  USHORT usFlags;
+  union { ULONG ulButtons; struct { USHORT usButtonFlags; USHORT usButtonData; }; };  // 偏移 4
+  ULONG ulRawButtons; LONG lLastX; LONG lLastY; ULONG ulExtraInformation;
+} RAWMOUSE;   /* 24 字节 */
+```
+
+C# 里按声明顺序排，`usButtonFlags` 落在偏移 2，读的是那 2 字节填充 —— 永远是 0。`lLastX` / `lLastY` 的偏移正好没变（12 / 16），所以移动照常用，只有按键读不到。这解释了为什么"移动能转，点击不能"。
+
+`RAWKEYBOARD` 同样写短了：真实的 `MakeCode` 和 `Flags` 是 `UINT`，`Reserved` / `VKey` 才是 `USHORT`。按声明顺序排，`VKey` 落在偏移 6（真实 `Flags` 的高半），所以真按键一个都进不来 —— 之前"键盘能用"是靠接口直接调 `ApplyKey`，不是靠真按键事件。
+
+实测（手工按 C 的布局摆字节，用 `Marshal.OffsetOf` 对）：
+
+```
+修之前: RAWMOUSE size=24 usButtonFlags@2 lLastX@12
+修之后: RAWMOUSE size=24 usButtonFlags@4 lLastX@12
+修之后: RAWKEYBOARD size=20 Flags@4 VKey@10
+```
+
+`-SelfTest` 加了这一项：按 C 的布局手工摆一个"左键按下 + 移动 (5, -3)"和一个"按下 a"，走的是和真事件同一条路（`FeedImage` → `HandleMouse` / `HandleKey`）：
+
+```
+结构布局:
+  RAWMOUSE size=24 usButtonFlags@4 lLastX@12 | RAWKEYBOARD size=20 Flags@4 VKey@10
+  包: AA 01 05 FD 00 53      ← 左键按下 + 移动
+  包: AB 00 00 04 00 00 00 00 00 AF
+  包: AB 00 00 00 00 00 00 00 00 AB
+```
+
+这条本来就该有：它不需要真硬件，注入的事件收不到 Raw Input 也能跑。
+
