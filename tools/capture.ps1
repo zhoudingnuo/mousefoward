@@ -125,22 +125,27 @@ function Verdict( [string]$line, [int]$sent )
 
     Write-Output ( '状态行: ' + $line.TrimEnd() )
 
-    $m = [regex]::Match( $line, 'cdc=(\d) hs=(\d) req=(\d) ok=(\d+) err=(\d+) drop=(\d+) ms=(\d+) kb=(\d+)' )
+    $m = [regex]::Match( $line, 'b=(\d+) cdc=(\d+) hs=(\d+) ok=(\d+) err=(\d+) drop=(\d+) ms=(\d+) kb=(\d+) p0=(\d+) p1=(\d+)' )
     if( -not $m.Success )
     {
         Write-Output '状态行读不全(计数器到 10 位会把 64 字节缓冲区写穿, 行被截)。'
         return
     }
 
-    $cdc  = [int]$m.Groups[1].Value; $hs = [int]$m.Groups[2].Value
+    $cdc  = [int]$m.Groups[2].Value; $hs = [int]$m.Groups[3].Value
     $ok   = [int]$m.Groups[4].Value; $err = [int]$m.Groups[5].Value
     $drop = [int]$m.Groups[6].Value; $ms = [int]$m.Groups[7].Value
+    $p0   = [int]$m.Groups[9].Value; $p1 = [int]$m.Groups[10].Value
 
     if( $cdc -eq 0 ) { Write-Output '  本端口没被枚举: COM 口存在但枚举没走完。' }
     else { Write-Output '  本端口已枚举, 字节进得来。' }
 
     if( $hs -eq 0 ) { Write-Output '  另一台机器没枚举键鼠口: 那边不会动。' }
     else { Write-Output '  另一台机器已枚举键鼠口。' }
+
+    # 报告描述符被请求过 = 那个接口被驱动绑定了。没请求过 = 没绑定。
+    if( $p1 -eq 0 ) { Write-Output ( '  鼠标接口没被绑定: 那边从没为接口 1 取报告描述符 (p1=0, 接口 0 取了 ' + $p0 + ' 次)。' ) }
+    else { Write-Output ( '  鼠标接口被绑定了 (p1=' + $p1 + '): 那边取过它的报告描述符。' ) }
 
     if( $ok -lt $sent )
     {

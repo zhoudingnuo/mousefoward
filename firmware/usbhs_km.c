@@ -93,6 +93,7 @@ static volatile uint8_t  dev_addr, dev_config;
 
 volatile uint8_t km_enum;
 volatile uint8_t kb_led;                 /* 另一台机器发来的键盘灯状态 */
+volatile uint32_t n_rpt0, n_rpt1;        /* 两个接口的报告描述符各被请求了几次 */
 
 static uint8_t ep0_buf[ EP0_SZ ];
 static uint8_t kb_buf[ 64 ];
@@ -234,9 +235,11 @@ static void hs_setup_stage( void )
                     case USB_DESCR_TYP_DEVICE: p_descr = dev_descr; len = sizeof( dev_descr ); break;
                     case USB_DESCR_TYP_CONFIG: p_descr = cfg_descr; len = sizeof( cfg_descr ); break;
                     case USB_DESCR_TYP_REPORT:
-                        /* wValue 低字节 = 接口号: 0 键盘, 1 鼠标 */
-                        if( setup_index == 0 )      { p_descr = kb_report; len = sizeof( kb_report ); }
-                        else if( setup_index == 1 ) { p_descr = ms_report; len = sizeof( ms_report ); }
+                        /* wValue 低字节 = 接口号: 0 键盘, 1 鼠标。
+                         * 计数是为了能看出 Windows 到底有没有为第二个接口取报告描述符:
+                         * 绑定了就会取, 没绑定就不会取。 */
+                        if( setup_index == 0 )      { n_rpt0++; p_descr = kb_report; len = sizeof( kb_report ); }
+                        else if( setup_index == 1 ) { n_rpt1++; p_descr = ms_report; len = sizeof( ms_report ); }
                         else err = 0xFF;
                         break;
                     case USB_DESCR_TYP_HID:

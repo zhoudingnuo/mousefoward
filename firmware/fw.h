@@ -55,5 +55,6 @@ void    km_init( void );
 uint8_t km_send( uint8_t ep, const uint8_t *data, uint16_t len );
 extern volatile uint8_t km_enum;
 extern volatile uint8_t kb_led;     /* 另一台机器发来的键盘灯状态 */
+extern volatile uint32_t n_rpt0, n_rpt1;   /* 两个接口的报告描述符各被请求了几次 */
 
 #endif
