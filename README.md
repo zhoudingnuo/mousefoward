@@ -73,23 +73,25 @@ powershell -File tools/status_test.ps1
 
 发一个鼠标包、一个键盘包，中间读状态行。板子上当前烧的这一版数据位不翻转，总线复位后只能读到第一行，第二行会超时；烧 `firmware/firmware.hex`（它已经修了这条）之后能连续读。
 
-## 跑一段写死的轨迹
+## 判断链路通不通
 
 ```powershell
 powershell -File tools/capture.ps1
 ```
 
-脚本里写死了一段轨迹：半径 60 像素的圆，24 步、每步最大 16 像素（一个 HID 报告最多带 ±127），每步 60 ms。另一台机器的光标照着画出一个圆，就说明整条通路是通的；画不出来就是某一段断了。每圈开头按一下左键，方便在那边确认。
+脚本里写死了一段轨迹：半径 60 像素的圆，24 步、每步最大 16 像素（一个 HID 报告最多带 ±127），每步 60 ms。它只做一件事——把这段轨迹发到 COM 口，然后读一次状态行，打印断在哪一段。另一台机器的光标照着画出一个圆，就是整条通路通的。
+
+判断按计数器读：`ok` 不到发的包数 = 本端到板这一段断了；`ok` 到了但 `ms` 不到 = 解析对了却没写进端点（主机没在轮询 EP2，或主循环取包慢）；`ms` 到了 = 报告写进端点，但 `ms` 只表示写进端点、不表示主机取走，那一段只能看那边画不画圆。
+
+状态行必须阻塞读，而且先发包再读：这一版板子只能读总线复位之后的第一行，要让那一行里的计数器是发完包以后的值。读不到这一行，就是数据位那条（拔插一次再跑，或烧 `firmware/firmware.hex`）。
 
 ```powershell
-powershell -File tools/capture.ps1 -Live          # 改成转发真实鼠标（每 20 ms 读光标）
+powershell -File tools/capture.ps1 -Live          # 改成转发真实鼠标（每 60 ms 读光标，不判断）
 powershell -File tools/capture.ps1 -DryRun        # 只打印包，不开串口
 powershell -File tools/capture.ps1 -Loops 10      # 跑 10 圈
 ```
 
-`-Live` 那条是读本机光标位置、把增量写成包；按键状态从 `GetKeyState` 读，放在 `flags`。串口自己按 VID 1A86 找，不用手动指定。
-
-桌面上放一个快捷方式指向这条命令，双击即开始跑轨迹。
+桌面上放一个快捷方式指向这条命令，双击即跑轨迹并打印判断。
 
 ## 目录
 
@@ -104,5 +106,5 @@ powershell -File tools/capture.ps1 -Loops 10      # 跑 10 圈
 | `firmware/firmware.hex` | 当前构建产物 |
 | `analysis.md` | 失败分析（上一版为什么报 Code 43，v3 为什么跑不通） |
 | `tools/send_test.ps1` | 直接往 COM 口发包 |
-| `tools/capture.ps1` | 跑写死的轨迹（一个圆）发到 COM 口；`-Live` 转发真实鼠标 |
+| `tools/capture.ps1` | 跑写死的轨迹（一个圆）+ 读状态行，判断链路断在哪一段 |
 | `tools/status_test.ps1` | 阻塞读状态行（`ReadExisting()` 读不到，必须挂一个读请求） |

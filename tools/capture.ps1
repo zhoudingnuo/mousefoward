@@ -1,13 +1,10 @@
-# 把鼠标动作写成协议字节, 发到板子的 COM 口。
-# 板子收到后从 USBHS 口当 HID 鼠标发到另一台机器。
+# 只用来判断链路通不通: 发一段写死的轨迹(一个圆), 然后读一次状态行, 打印判断。
+# 另一台机器上光标照着画出一个圆 = 整条通路是通的; 状态行把断在哪一段指出来。
 #
-# 默认跑下面写死的那段轨迹(一个圆)。另一台机器的光标照着画出一个圆,
-# 就说明整条通路是通的; 画不出来就是某一段断了。要看真实鼠标动作加 -Live。
-#
-#   powershell -File tools\capture.ps1                # 跑内置轨迹
-#   powershell -File tools\capture.ps1 -Live          # 转发真实鼠标
-#   powershell -File tools\capture.ps1 -DryRun        # 只打印包, 不开串口
-#   powershell -File tools\capture.ps1 -Loops 10      # 跑 10 圈
+#   powershell -File tools\capture.ps1              # 跑轨迹 + 打印判断
+#   powershell -File tools\capture.ps1 -Live        # 改成转发真实鼠标(不判断)
+#   powershell -File tools\capture.ps1 -DryRun      # 只打印包, 不开串口
+#   powershell -File tools\capture.ps1 -Loops 10    # 跑 10 圈
 
 param(
     [string]$Com = '',
@@ -18,8 +15,7 @@ param(
 )
 
 # 半径 60 像素的圆, 24 步。每步是相对上一次的增量(一个 HID 报告最多带 ±127,
-# 这里最大 16)。y 正方向朝下, 和 HID 报告的符号一致。
-# 这 24 步是 15° 一个点的坐标差, 加起来正好回到起点。
+# 这里最大 16)。这 24 步是 15° 一个点的坐标差, 加起来正好回到起点。
 $Circle = @(
     @(  -2,  16), ( -6,  14), (-10,  12), (-12,  10), (-14,   6), (-16,   2),
     (-16,  -2), (-14,  -6), (-12, -10), (-10, -12), ( -6, -14), ( -2, -16),
@@ -108,6 +104,58 @@ function Send( [byte[]]$pk )
     }
 }
 
+# 状态行必须阻塞读: 驱动只有在有一个读请求挂着的时候才会去取设备的 IN 数据,
+# ReadExisting() 只清驱动缓冲区, 永远读不到。
+function ReadLine( $timeoutMs )
+{
+    $p.DiscardNull = $true
+    $p.ReadTimeout = $timeoutMs
+    try { return $p.ReadLine() } catch { return '' }
+}
+
+function Verdict( [string]$line, [int]$sent )
+{
+    if( $DryRun ) { return }
+
+    if( -not $line )
+    {
+        Write-Output '读不到状态行。这一版板子只能读总线复位之后的第一行: 拔插一次再跑, 或者烧 firmware/firmware.hex(已经修了数据位)。'
+        return
+    }
+
+    Write-Output ( '状态行: ' + $line.TrimEnd() )
+
+    $m = [regex]::Match( $line, 'cdc=(\d) hs=(\d) req=(\d) ok=(\d+) err=(\d+) drop=(\d+) ms=(\d+) kb=(\d+)' )
+    if( -not $m.Success )
+    {
+        Write-Output '状态行读不全(计数器到 10 位会把 64 字节缓冲区写穿, 行被截)。'
+        return
+    }
+
+    $cdc  = [int]$m.Groups[1].Value; $hs = [int]$m.Groups[2].Value
+    $ok   = [int]$m.Groups[4].Value; $err = [int]$m.Groups[5].Value
+    $drop = [int]$m.Groups[6].Value; $ms = [int]$m.Groups[7].Value
+
+    if( $cdc -eq 0 ) { Write-Output '  本端口没被枚举: COM 口存在但枚举没走完。' }
+    else { Write-Output '  本端口已枚举, 字节进得来。' }
+
+    if( $hs -eq 0 ) { Write-Output '  另一台机器没枚举键鼠口: 那边不会动。' }
+    else { Write-Output '  另一台机器已枚举键鼠口。' }
+
+    if( $ok -lt $sent )
+    {
+        Write-Output ( '  发了 ' + $sent + ' 包, 只解析到 ' + $ok + ' 个 (err=' + $err + ' drop=' + $drop + '): 本端到板这一段断了。' )
+    }
+    elseif( $ms -lt $ok )
+    {
+        Write-Output ( '  解析对了 ' + $ok + ' 个, 只有 ' + $ms + ' 个写进端点: 端点一直忙(主机没在轮询 EP2), 或者主循环取包慢(drop=' + $drop + ')。' )
+    }
+    else
+    {
+        Write-Output ( '  ' + $ok + ' 个包全部解析并写进端点。ms 只表示写进端点, 不表示主机取走 —— 那一段只能看那边画不画圆。' )
+    }
+}
+
 $sent = 0
 
 try
@@ -152,19 +200,21 @@ try
 
     Write-Output ( '跑内置轨迹: ' + $Com + ', ' + $Loops + ' 圈, 每步 ' + $IntervalMs + 'ms' )
 
+    # 先发包再读状态行: 这一版只能读总线复位之后的第一行, 要让那一行里的
+    # 计数器是发完包以后的值。
     for( $n = 0; $n -lt $Loops; $n++ )
     {
         foreach( $s in $Circle )
         {
-            # flags 第 2 位是左键: 每圈开头按一下再松开, 那边好确认
-            Send ( Packet @( 0xAA, 0x01, $s[0], $s[1], 0 ) )
+            Send ( Packet @( 0xAA, 0x00, $s[0], $s[1], 0 ) )
             Start-Sleep -Milliseconds $IntervalMs
             $sent++
         }
-        Send ( Packet @( 0xAA, 0x00, 0, 0, 0 ) )
-        Start-Sleep -Milliseconds 400
-        Write-Output ( '第 ' + ( $n + 1 ) + ' 圈完成 (累计 ' + $sent + ' 包)' )
     }
+
+    if( -not $DryRun ) { Start-Sleep -Milliseconds 300 }
+
+    Verdict ( ReadLine 3000 ) $sent
 }
 finally
 {
