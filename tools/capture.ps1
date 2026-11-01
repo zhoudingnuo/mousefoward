@@ -3,6 +3,7 @@
 #
 #   powershell -File tools\capture.ps1              # 跑轨迹 + 打印判断
 #   powershell -File tools\capture.ps1 -Live        # 改成转发真实鼠标(不判断)
+#   powershell -File tools\capture.ps1 -Live -Debug # 转发 + 每包打印 + 每 20 包读一次状态行
 #   powershell -File tools\capture.ps1 -DryRun      # 只打印包, 不开串口
 #   powershell -File tools\capture.ps1 -Loops 10    # 跑 10 圈
 
@@ -11,7 +12,10 @@ param(
     [int]$IntervalMs = 60,
     [int]$Loops = 3,
     [switch]$DryRun,
-    [switch]$Live
+    [switch]$Live,
+    [switch]$Debug,
+    [int]$StatusEvery = 20,
+    [int]$ReadTimeoutMs = 3000
 )
 
 # 半径 60 像素的圆, 24 步。每步是相对上一次的增量(一个 HID 报告最多带 ±127,
@@ -47,6 +51,26 @@ public class Host {
 }
 "@
 
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Port {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct COMMTIMEOUTS {
+        public uint ReadIntervalTimeout;
+        public uint ReadTotalTimeoutMultiplier;
+        public uint ReadTotalTimeoutConstant;
+        public uint WriteTotalTimeoutMultiplier;
+        public uint WriteTotalTimeoutConstant;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr sa, uint mode, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetCommTimeouts(IntPtr h, ref COMMTIMEOUTS t);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool WriteFile(IntPtr h, byte[] b, uint len, ref uint written, IntPtr ov);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool ReadFile(IntPtr h, byte[] b, uint len, ref uint read, IntPtr ov);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool CloseHandle(IntPtr h);
+}
+"@
+
 function Packet( [int[]]$bytes )
 {
     # dx/dy 是带符号的: 取低 8 位再拼, 不能直接 [byte]
@@ -69,7 +93,7 @@ function Clamp127( [int]$v )
     return $v
 }
 
-$p = $null
+$h = [IntPtr]::Zero
 if( -not $DryRun )
 {
     if( -not $Com ) { $Com = FindCdcPort }
@@ -79,28 +103,37 @@ if( -not $DryRun )
         exit 1
     }
 
-    $p = New-Object System.IO.Ports.SerialPort $Com, 115200, None, 8, One
-    try
-    {
-        $p.Open()
-    }
-    catch
+    $h = [Port]::CreateFile( $Com, 3, 3, [IntPtr]::Zero, 3, 0, [IntPtr]::Zero )
+    if( $h.ToInt64() -eq -1 )
     {
         # 卡在这里不返回 = 固件的状态阶段没 arm (analysis.md 第三节), 烧新 hex
-        Write-Output ( '打不开 ' + $Com + ': ' + $_.Exception.Message )
+        Write-Output ( '打不开 ' + $Com + ' (错误 ' + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error() + ')' )
         exit 1
     }
+
+    $t = New-Object 'Port+COMMTIMEOUTS'
+    # 必须用 ReadTotalTimeoutConstant。ReadIntervalTimeout 只在收到第一个字节以后起作用,
+    # 一个字节都没有时 ReadFile 立刻返回 0, 驱动不会去取设备的 IN 数据 ——
+    # SerialPort.ReadTimeout 映射的正是 ReadIntervalTimeout, 所以之前 ReadLine 永远超时。
+    $t.ReadIntervalTimeout = 0
+    $t.ReadTotalTimeoutMultiplier = 0
+    $t.ReadTotalTimeoutConstant = [uint32]$ReadTimeoutMs
+    $t.WriteTotalTimeoutMultiplier = 0
+    $t.WriteTotalTimeoutConstant = 2000
+    [Port]::SetCommTimeouts( $h, [ref]$t ) | Out-Null
 }
 
 function Send( [byte[]]$pk )
 {
-    if( $DryRun )
+    if( $DryRun -or $Debug )
     {
         Write-Output ( '包: ' + (( $pk | ForEach-Object { $_.ToString('X2') }) -join ' ') )
     }
-    else
+
+    if( -not $DryRun )
     {
-        $p.Write( $pk )
+        $w = [uint32]0
+        [Port]::WriteFile( $h, $pk, [uint32]$pk.Length, [ref]$w, [IntPtr]::Zero ) | Out-Null
     }
 }
 
@@ -108,56 +141,93 @@ function Send( [byte[]]$pk )
 # ReadExisting() 只清驱动缓冲区, 永远读不到。
 function ReadLine( $timeoutMs )
 {
-    $p.DiscardNull = $true
-    $p.ReadTimeout = $timeoutMs
-    try { return $p.ReadLine() } catch { return '' }
+    $t = New-Object 'Port+COMMTIMEOUTS'
+    $t.ReadIntervalTimeout = 0
+    $t.ReadTotalTimeoutMultiplier = 0
+    $t.ReadTotalTimeoutConstant = [uint32]$timeoutMs
+    $t.WriteTotalTimeoutMultiplier = 0
+    $t.WriteTotalTimeoutConstant = 2000
+    [Port]::SetCommTimeouts( $h, [ref]$t ) | Out-Null
+
+    $buf = New-Object byte[] 96
+    $r = [uint32]0
+    if( -not [Port]::ReadFile( $h, $buf, [uint32]96, [ref]$r, [IntPtr]::Zero ) ) { return '' }
+    if( $r -eq 0 ) { return '' }
+    return [System.Text.Encoding]::ASCII.GetString( $buf[0..($r-1)] )
 }
 
-function Verdict( [string]$line, [int]$sent )
+$script:base = $null
+
+function Query( [int]$sent )
 {
     if( $DryRun ) { return }
 
+    $w = [uint32]0
+    [Port]::WriteFile( $h, [byte[]]( 0x53 ), [uint32]1, [ref]$w, [IntPtr]::Zero ) | Out-Null
+
+    $line = ReadLine 1500
     if( -not $line )
     {
-        Write-Output '读不到状态行。这一版板子只能读总线复位之后的第一行: 拔插一次再跑, 或者烧 firmware/firmware.hex(已经修了数据位)。'
+        Write-Output '读不到状态行。要先发一个 S 再阻塞读; 用 SerialPort.ReadTimeout 读不到(它映射的是 ReadIntervalTimeout, 没有数据时 ReadFile 立刻返回 0, 驱动不会去取 IN 数据)。'
         return
     }
 
     Write-Output ( '状态行: ' + $line.TrimEnd() )
 
-    $m = [regex]::Match( $line, 'b=(\d+) cdc=(\d+) hs=(\d+) ok=(\d+) err=(\d+) drop=(\d+) ms=(\d+) kb=(\d+) p0=(\d+) p1=(\d+)' )
-    if( -not $m.Success )
+    $now = Parse $line
+    if( -not $now )
     {
         Write-Output '状态行读不全(计数器到 10 位会把 64 字节缓冲区写穿, 行被截)。'
         return
     }
 
-    $cdc  = [int]$m.Groups[2].Value; $hs = [int]$m.Groups[3].Value
-    $ok   = [int]$m.Groups[4].Value; $err = [int]$m.Groups[5].Value
-    $drop = [int]$m.Groups[6].Value; $ms = [int]$m.Groups[7].Value
-    $p0   = [int]$m.Groups[9].Value; $p1 = [int]$m.Groups[10].Value
+    if( -not $script:base ) { $script:base = $now }
+    Verdict $now $script:base $sent
+}
 
-    if( $cdc -eq 0 ) { Write-Output '  本端口没被枚举: COM 口存在但枚举没走完。' }
+function Parse( [string]$line )
+{
+    $m = [regex]::Match( $line, 'b=(\d+) cdc=(\d+) hs=(\d+) ok=(\d+) err=(\d+) drop=(\d+) ms=(\d+) kb=(\d+) p0=(\d+) p1=(\d+)' )
+    if( -not $m.Success ) { return $null }
+
+    return @{
+        b    = [int]$m.Groups[1].Value; cdc = [int]$m.Groups[2].Value; hs = [int]$m.Groups[3].Value
+        ok   = [int]$m.Groups[4].Value; err = [int]$m.Groups[5].Value; drop = [int]$m.Groups[6].Value
+        ms   = [int]$m.Groups[7].Value; kb  = [int]$m.Groups[8].Value
+        p0   = [int]$m.Groups[9].Value; p1  = [int]$m.Groups[10].Value
+    }
+}
+
+# 计数器是累计的, 所以只能比两次状态行之间的差值, 不能拿本次发了多少包去比。
+function Verdict( $now, $base, [int]$sent )
+{
+    $dok   = $now.ok   - $base.ok
+    $derr  = $now.err  - $base.err
+    $ddrop = $now.drop - $base.drop
+    $dms   = $now.ms   - $base.ms
+    $dkb   = $now.kb   - $base.kb
+
+    if( $now.cdc -eq 0 ) { Write-Output '  本端口没被枚举: COM 口存在但枚举没走完。' }
     else { Write-Output '  本端口已枚举, 字节进得来。' }
 
-    if( $hs -eq 0 ) { Write-Output '  另一台机器没枚举键鼠口: 那边不会动。' }
+    if( $now.hs -eq 0 ) { Write-Output '  另一台机器没枚举键鼠口: 那边不会动。' }
     else { Write-Output '  另一台机器已枚举键鼠口。' }
 
     # 报告描述符被请求过 = 那个接口被驱动绑定了。没请求过 = 没绑定。
-    if( $p1 -eq 0 ) { Write-Output ( '  鼠标接口没被绑定: 那边从没为接口 1 取报告描述符 (p1=0, 接口 0 取了 ' + $p0 + ' 次)。' ) }
-    else { Write-Output ( '  鼠标接口被绑定了 (p1=' + $p1 + '): 那边取过它的报告描述符。' ) }
+    if( $now.p1 -eq 0 ) { Write-Output ( '  鼠标接口没被绑定: 那边从没为接口 1 取报告描述符 (p1=0, 接口 0 取了 ' + $now.p0 + ' 次)。' ) }
+    else { Write-Output ( '  鼠标接口被绑定了 (p1=' + $now.p1 + '): 那边取过它的报告描述符。' ) }
 
-    if( $ok -lt $sent )
+    if( $dok -lt $sent )
     {
-        Write-Output ( '  发了 ' + $sent + ' 包, 只解析到 ' + $ok + ' 个 (err=' + $err + ' drop=' + $drop + '): 本端到板这一段断了。' )
+        Write-Output ( '  发了 ' + $sent + ' 包, 只解析到 ' + $dok + ' 个 (err=' + $derr + ' drop=' + $ddrop + '): 本端到板这一段断了。' )
     }
-    elseif( $ms -lt $ok )
+    elseif( $dms + $dkb -lt $dok )
     {
-        Write-Output ( '  解析对了 ' + $ok + ' 个, 只有 ' + $ms + ' 个写进端点: 端点一直忙(主机没在轮询 EP2), 或者主循环取包慢(drop=' + $drop + ')。' )
+        Write-Output ( '  解析对了 ' + $dok + ' 个, 只有 ' + $dms + ' 个鼠标报告写进端点: 端点一直忙(主机没在轮询 EP2), 或者主循环取包慢(drop=' + $ddrop + ')。' )
     }
     else
     {
-        Write-Output ( '  ' + $ok + ' 个包全部解析并写进端点。ms 只表示写进端点, 不表示主机取走 —— 那一段只能看那边画不画圆。' )
+        Write-Output ( '  ' + $dok + ' 个包全部解析并写进端点。ms 只表示写进端点, 不表示主机取走 —— 那一段只能看那边画不画圆。' )
     }
 }
 
@@ -165,6 +235,9 @@ $sent = 0
 
 try
 {
+    # 基线: 计数器是累计的, 后面所有判断都比这一行的差值
+    if( -not $DryRun ) { Query 0 }
+
     if( $Live )
     {
         $pt = New-Object 'Host+POINT'
@@ -200,6 +273,8 @@ try
 
             Send ( Packet @( 0xAA, $flags, $dx, $dy, 0 ) )
             $sent++
+
+            if( $Debug -and ( $sent % $StatusEvery -eq 0 ) ) { Query $sent }
         }
     }
 
@@ -217,11 +292,13 @@ try
         }
     }
 
-    if( -not $DryRun ) { Start-Sleep -Milliseconds 300 }
-
-    Verdict ( ReadLine 3000 ) $sent
+    if( -not $DryRun )
+    {
+        Start-Sleep -Milliseconds 300
+        Query $sent
+    }
 }
 finally
 {
-    if( $p ) { $p.Close() }
+    if( $h.ToInt64() -ne -1 ) { [Port]::CloseHandle( $h ) | Out-Null }
 }
