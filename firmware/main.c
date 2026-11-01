@@ -95,6 +95,7 @@ void rx_byte( uint8_t b )
         {
             rx_ready = 1;
             n_ok++;
+            idx = 0;                      /* 包取走以后必须回到包头, 否则下一个字节被当成正文 */
         }
         else
         {
@@ -180,11 +181,8 @@ int main( void )
                 report[ 2 ] = rx_pkt[ 3 ];                                     /* Y */
                 report[ 3 ] = ( rx_pkt[ 1 ] & 0x40 ) ? rx_pkt[ 4 ] : 0;       /* 滚轮 */
 
-                if( km_send( KM_EP_MS, report, 4 ) )
-                {
-                    rx_ready = 0;
-                    n_sent_ms++;
-                }
+                if( km_send( KM_EP_MS, report, 4 ) ) n_sent_ms++;
+                else n_drop++;
             }
             else
             {
@@ -193,12 +191,13 @@ int main( void )
                 for( uint8_t i = 0; i < 6; i++ )
                     report[ 2 + i ] = rx_pkt[ 3 + i ];                        /* 按键码 */
 
-                if( km_send( KM_EP_KB, report, 8 ) )
-                {
-                    rx_ready = 0;
-                    n_sent_kb++;
-                }
+                if( km_send( KM_EP_KB, report, 8 ) ) n_sent_kb++;
+                else n_drop++;
             }
+
+            /* 包处理完就放手, 端点忙不能把解析器卡住 —— 卡住以后连状态行都读不到,
+             * 那一段就完全没法判断了。 */
+            rx_ready = 0;
         }
 
         /* 本端口的状态优先, 它没动静时才让键鼠口的状态盖过来 */
