@@ -48,6 +48,13 @@ static const uint8_t cfg_descr[ ] =
     /* EP2 IN 7 */   0x07, 0x05, 0x82, 0x03, 0x08, 0x00, 0x01
 };
 
+/* 上面两个 HID 类描述符在 cfg_descr 里的位置, 按布局算:
+ *   配置头 9 + IAD 8 + IF0 9                 = 26
+ *   上一行 + HID 9 + 端点 7 + IF1 9          = 51
+ * 以前写死的 18 和 43 是没有 IAD 时的位置。 */
+#define HID_DESC_0  ( 9 + 8 + 9 )
+#define HID_DESC_1  ( 9 + 8 + 9 + 9 + 7 + 9 )
+
 /* 键盘报告描述符 (62 字节) */
 static const uint8_t kb_report[ ] =
 {
@@ -233,9 +240,10 @@ static void hs_setup_stage( void )
                         else err = 0xFF;
                         break;
                     case USB_DESCR_TYP_HID:
-                        /* HID 描述在配置描述符里: 18 = 键盘, 43 = 鼠标 */
-                        if( setup_index == 0 )      { p_descr = &cfg_descr[ 18 ]; len = 9; }
-                        else if( setup_index == 1 ) { p_descr = &cfg_descr[ 43 ]; len = 9; }
+                        /* 按接口号取配置描述符里的那 9 字节。不能写死数字:
+                         * 插了 IAD 以后每个接口都往后挪 8 字节。 */
+                        if( setup_index == 0 )      { p_descr = &cfg_descr[ HID_DESC_0 ]; len = 9; }
+                        else if( setup_index == 1 ) { p_descr = &cfg_descr[ HID_DESC_1 ]; len = 9; }
                         else err = 0xFF;
                         break;
                     case USB_DESCR_TYP_STRING:
