@@ -97,10 +97,13 @@ powershell -File tools/capture.ps1 -Loops 10      # 跑 10 圈
 
 ```powershell
 powershell -File tools/forward.ps1                # 转发
-powershell -File tools/forward.ps1 -Debug         # 每 50 包打印 + 每 200 包读一次状态行（含帧率）
+powershell -File tools/forward.ps1 -Debug         # 每 50 包打印包和帧率（不读设备）
+powershell -File tools/forward.ps1 -Status        # 安静 5 秒以后读一次状态行（判断断在哪一段）
 powershell -File tools/forward.ps1 -SelfTest      # 不接串口，直接验证映射和拆分
 powershell -File tools/forward.ps1 -NoKeyboard    # 只转发鼠标
 ```
+
+转发路径里没有任何会挂住的调用：读状态行是一个会挂住的往返（实测每次 1.5 s），挂住的这段时间采集线程还在出包，读回来以后一次性全倒出去，那边就是"卡一下然后跳一段"。所以帧率从包数自己算，状态行只在安静了 5 秒以后读（那时候没有在转发），读不到就退避 30 秒。
 
 `capture.ps1 -Live` 每 60 ms 读一次光标，上限 16.7 包/秒，而且没有键盘采集。`forward.ps1` 不轮询：注册 Raw Input（`WM_INPUT` + `RIDEV_INPUTSINK`），系统每来一个事件就出一个包，包率 = 系统事件率（鼠标一般 125~1000 Hz）。增量超过 ±127 拆成多个包（中间的包只带移动，最后一个带按键和滚轮），键盘按 VKey → HID usage 出 6KRO 快照。
 

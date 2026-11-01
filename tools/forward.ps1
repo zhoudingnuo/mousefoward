@@ -7,9 +7,13 @@
 #      之前用 Clamp127 直接夹掉, 一次大移动会丢坐标。
 #   3. 键盘用 Raw Input 的 VKey 映射到 HID usage, 每次按下/释放发一次 6KRO 快照(参考的 keyboard_monitor)。
 #      之前这个脚本没有任何键盘采集, 键盘通路只有手动跑 .kb.ps1 时才被用到。
+#   4. 转发的时候不读状态行。读状态行是一个会挂住的往返(实测每次 1.5s), 挂住的这段时间采集线程还在
+#      出包, 读回来以后一次性全倒出去 —— 那边就是"卡一下然后跳一段"。帧率从包数自己算, 不需要读设备;
+#      状态行只在安静了 QuietSec 秒以后读(那时候没有在转发, 挂住也不影响)。
 #
 #   powershell -File tools\forward.ps1                # 转发
-#   powershell -File tools\forward.ps1 -Debug         # 每 10 包打印 + 每 20 包读一次状态行(含帧率)
+#   powershell -File tools\forward.ps1 -Debug         # 每 50 包打印包和帧率(不读设备)
+#   powershell -File tools\forward.ps1 -Status        # 安静 5 秒以后读一次状态行(判断断在哪一段)
 #   powershell -File tools\forward.ps1 -DryRun        # 只打印包, 不开串口
 #   powershell -File tools\forward.ps1 -SelfTest      # 不接串口, 直接验证映射和拆分
 #   powershell -File tools\forward.ps1 -NoKeyboard    # 只转发鼠标
@@ -18,9 +22,10 @@ param(
     [string]$Com = '',
     [switch]$DryRun,
     [switch]$Debug,
+    [switch]$Status,
     [switch]$SelfTest,
     [switch]$NoKeyboard,
-    [int]$StatusEvery = 200,
+    [int]$QuietSec = 5,
     [int]$PrintEvery = 50,
     [int]$ReadTimeoutMs = 3000
 )
@@ -373,9 +378,23 @@ function Parse( [string]$line )
 $script:base = $null
 $script:winStart = Get-Date
 $script:winSent = 0
+$script:quietSince = Get-Date
+$script:retryAt = Get-Date
+$script:qok = $false
+
+# 帧率从包数自己算, 不需要读设备 —— 这是转发过程中唯一能一直打印的东西。
+function Rate()
+{
+    $sec = (( Get-Date ) - $script:winStart).TotalSeconds
+    if( $sec -le 0 ) { return }
+    Write-Output ( '这一段 ' + $script:winSent + ' 包 / ' + [math]::Round( $sec, 1 ) + 's = ' + [math]::Round( $script:winSent / $sec, 1 ) + ' 包/秒' )
+    $script:winStart = Get-Date
+    $script:winSent = 0
+}
 
 function Query()
 {
+    $script:qok = $false
     if( $DryRun ) { return }
 
     $w = [uint32]0
@@ -395,12 +414,7 @@ function Query()
         return
     }
 
-    $sec = (( Get-Date ) - $script:winStart).TotalSeconds
-    $fps = 0
-    if( $sec -gt 0 ) { $fps = [math]::Round( $script:winSent / $sec, 1 ) }
-
     Write-Output ( '状态行: ' + $line.TrimEnd() )
-    Write-Output ( '  这一段 ' + $script:winSent + ' 包 / ' + [math]::Round( $sec, 1 ) + 's = ' + $fps + ' 包/秒' )
 
     if( -not $script:base ) { $script:base = $now }
 
@@ -434,8 +448,7 @@ function Query()
         Write-Output ( '  ' + $dok + ' 个包全部解析并写进端点 (鼠标 ' + $dms + ', 键盘 ' + $dkb + ')。' )
     }
 
-    $script:winStart = Get-Date
-    $script:winSent = 0
+    $script:qok = $true
 }
 
 $h = [IntPtr]::Zero
@@ -489,6 +502,7 @@ function Drain()
         $script:winSent++
         $n++
     }
+    if( $n -gt 0 ) { $script:quietSince = Get-Date }
     return $n
 }
 
@@ -497,7 +511,7 @@ $script:mark = 0
 
 try
 {
-    if( -not $DryRun -and -not $SelfTest ) { Query }
+    if( -not $DryRun -and -not $SelfTest -and $Status ) { Query }
 
     if( $SelfTest )
     {
@@ -542,8 +556,16 @@ try
     while( $true )
     {
         $n = Drain
-        # 读状态行会挂住最多 ReadTimeoutMs, 所以只在没包的时候读, 而且每 StatusEvery 包才读一次。
-        if( $Debug -and $n -eq 0 -and ( $script:sent - $script:mark -ge $StatusEvery ) ) { Query; $script:mark = $script:sent }
+        if( $Debug -and ( $script:sent - $script:mark -ge $PrintEvery ) ) { Rate; $script:mark = $script:sent }
+        # 状态行只在安静了 QuietSec 秒以后读。转发的时候不能有任何会挂住的往返:
+        # 挂住的这段时间采集线程还在出包, 读回来以后一次性全倒出去, 那边就是"卡一下然后跳一段"。
+        if( $Status -and $n -eq 0 -and ( ( Get-Date ) - $script:quietSince ).TotalSeconds -ge $QuietSec -and ( Get-Date ) -ge $script:retryAt )
+        {
+            # 读不到说明板子那边卡住了(上一次状态行没被取走, 解析器/端点标志不会自己清), 重试没意义。
+            Query
+            # 读不到说明板子那边卡住了(上一次状态行没被取走, 端点标志不会自己清), 重试没意义。
+            if( -not $script:qok ) { $script:retryAt = ( Get-Date ).AddSeconds( 30 ) }
+        }
         if( $n -eq 0 ) { Start-Sleep -Milliseconds 5 }
     }
 }
