@@ -28,6 +28,7 @@
 extern volatile uint8_t  rx_pkt[ 12 ];
 extern volatile uint8_t  rx_ready;
 void rx_byte( uint8_t b );          /* 由 USBFS 中断调用 */
+void rx_reset( void );              /* 总线复位时把解析器放回去 */
 
 void delay_us( uint32_t n );
 

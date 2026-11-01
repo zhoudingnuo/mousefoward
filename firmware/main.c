@@ -27,6 +27,7 @@ volatile uint8_t rx_ready;
 static volatile uint8_t  stat_req;
 
 static volatile uint32_t n_ok, n_err, n_drop, n_sent_ms, n_sent_kb;
+static uint8_t idx;
 
 /*********************************************************************
  * @fn      delay_us
@@ -62,10 +63,14 @@ void delay_us( uint32_t n )
  * @fn      rx_byte
  * @brief   逐字节解析本端发来的字节 (由 USBFS 中断调用)
  */
+void rx_reset( void )
+{
+    idx = 0;
+    rx_ready = 0;
+}
+
 void rx_byte( uint8_t b )
 {
-    static uint8_t idx;
-
     if( rx_ready )
     {
         /* 主循环还没取走上一个包 */

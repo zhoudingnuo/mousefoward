@@ -407,6 +407,7 @@ void USBFS_IRQHandler( void )
 
         USBFSD->DEV_ADDR = 0;
         cdc_endp_init( );
+        rx_reset();                       /* 解析器也要回去, 不然卡着的包会一直卡着 */
         USBFSD->INT_FG = USBFS_UIF_BUS_RST;
     }
     else
