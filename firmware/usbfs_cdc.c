@@ -208,7 +208,13 @@ void USBFS_IRQHandler( void )
                 }
                 else
                 {
-                    ep_busy[ ep ] = 0;      /* EP1 / EP3 发完了 */
+                    /* 发完必须重新置 NAK 并翻转数据位。不翻转的话下一包还是同一个
+                     * 数据位, 主机把它当成重复包丢掉 —— 第一条状态行能读, 后面的读不到。 */
+                    volatile uint8_t *ctrl = ( ep == 1 ) ? &USBFSD->UEP1_TX_CTRL : &USBFSD->UEP3_TX_CTRL;
+
+                    *ctrl = ( *ctrl & ~USBFS_UEP_T_RES_MASK ) | USBFS_UEP_T_RES_NAK;
+                    *ctrl ^= USBFS_UEP_T_TOG;
+                    ep_busy[ ep ] = 0;
                 }
                 break;
 
