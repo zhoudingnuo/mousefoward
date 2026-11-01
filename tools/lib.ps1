@@ -76,8 +76,11 @@ public class RawCap {
     [DllImport("user32.dll", SetLastError=true)] static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] rids, uint num, uint size);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern uint GetRawInputData(IntPtr hInput, uint cmd, IntPtr data, ref uint size, uint headerSize);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool PeekMessage(ref MSG msg, IntPtr hwnd, uint min, uint max, uint remove);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool GetMessage(ref MSG msg, IntPtr hwnd, uint min, uint max);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool TranslateMessage(ref MSG msg);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr DispatchMessage(ref MSG msg);
+    [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint ms);
 
     /* WndProc 是原生回调。委托必须被静态字段引用住, 被 GC 回收以后原生那边会踩空。 */
     delegate void WndProcDelegate(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
@@ -98,6 +101,7 @@ public class RawCap {
     public static bool Registered = false;
     public static int nInput = 0;
     public static string Stage = "";
+    public static IntPtr Hwnd = IntPtr.Zero;
 
     static void Loop() {
         WNDCLASSEX wc = new WNDCLASSEX();
@@ -112,6 +116,7 @@ public class RawCap {
             new IntPtr(-3), IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);   // -3 = HWND_MESSAGE
         if (hwnd == IntPtr.Zero) { Stage += " CreateWindowEx " + Marshal.GetLastWin32Error(); return; }
         Stage += " hwnd=" + hwnd;
+        Hwnd = hwnd;
 
         RAWINPUTDEVICE[] rids = new RAWINPUTDEVICE[2];
         rids[0].usUsagePage = 1; rids[0].usUsage = 2;   // 鼠标
@@ -124,9 +129,14 @@ public class RawCap {
         }
         Registered = true;
 
+        /* 系统的计时精度默认是 15.625 ms: 以前这里 Sleep(1) 实际睡 15.6 ms, 也就是每秒只转 64 圈,
+         * 事件要等到下一轮才处理。改成挂住的 GetMessage(来了立刻处理), 再把精度提到 1 ms,
+         * 主循环里 Start-Sleep -Milliseconds 5 也才真的是 5 ms。 */
+        timeBeginPeriod(1);
+
         MSG msg = new MSG();
         while (true) {
-            if (!PeekMessage(ref msg, IntPtr.Zero, 0, 0, PM_REMOVE)) { Thread.Sleep(1); continue; }
+            if (!GetMessage(ref msg, IntPtr.Zero, 0, 0)) continue;
             if (msg.message == WM_INPUT) nInput++;
             TranslateMessage(ref msg);
             DispatchMessage(ref msg);
@@ -137,7 +147,16 @@ public class RawCap {
      * GetFunctionPointerForDelegate 对这种方法返回的不是真正的非托管 thunk:
      * RegisterClassEx 照样返回 atom, 但 CreateWindowEx 会失败(返回 0, 不设置错误码)。
      * 把调用挪到一个普通方法里就好了 —— 实测: 同一个类, 函数体改成 HandleInput(lParam) 就能建窗口。 */
+    /* 测"消息到了"到"处理它"隔多久: 轮询要等下一次 PeekMessage, 挂住的 GetMessage 立刻处理。
+     * 投一个 WM_USER, 这里计数; 调用方量从投到计数变化的时间。 */
+    public static int nProbe = 0;
+    public static bool PostProbe() {
+        if (Hwnd == IntPtr.Zero) return false;
+        return PostMessage(Hwnd, 0x0400, IntPtr.Zero, IntPtr.Zero);
+    }
+
     static void WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam) {
+        if (msg == 0x0400) { nProbe++; return; }
         if (msg != WM_INPUT) return;
         nInput++;
         HandleInput(lParam);

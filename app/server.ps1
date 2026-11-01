@@ -353,7 +353,9 @@ try
             $script:wantStatus = $false
         }
 
-        if( $n -eq 0 ) { Start-Sleep -Milliseconds 5 }
+        # 采集线程现在是挂住的 GetMessage(消息来了立刻处理), 这里只在没包要发时歇一下。
+        # lib.ps1 里调了 timeBeginPeriod(1), 所以这个 1 ms 才真的是 1 ms(默认计时精度 15.625 ms)。
+        if( $n -eq 0 ) { Start-Sleep -Milliseconds 1 }
     }
 }
 finally

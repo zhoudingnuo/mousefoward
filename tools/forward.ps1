@@ -242,7 +242,8 @@ try
             Query
             if( -not $script:qok ) { $script:retryAt = ( Get-Date ).AddSeconds( 30 ) }
         }
-        if( $n -eq 0 ) { Start-Sleep -Milliseconds 5 }
+        # 同上: 采集线程挂住等消息, 这里只在没包要发时歇一下; timeBeginPeriod(1) 以后 1 ms 才是 1 ms。
+        if( $n -eq 0 ) { Start-Sleep -Milliseconds 1 }
     }
 }
 finally

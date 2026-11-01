@@ -38,9 +38,13 @@
   .screen { position: fixed; inset: 0; background: #000; display: flex; flex-direction: column;
            align-items: center; justify-content: center; gap: 16px; }
   .screen.hidden, .wrap.hidden { display: none; }
+  .screen:fullscreen { width: 100vw; height: 100vh; }
+  ::backdrop { background: #000; }
   .screen .slot { width: 320px; }
   .screen .mini { color: #6f7780; font-family: Consolas, monospace; font-size: 13px; }
   .screen .esc { color: #454b53; font-size: 12px; }
+  .screen .fsline { color: #454b53; font-size: 12px; }
+  .screen .fsline.bad { color: #e88b8b; }
   .hidden { display: none; }
 </style>
 </head>
@@ -50,7 +54,7 @@
   <div class="sub">本端 → 板子(USBFS CDC) → 另一台机器(USBHS HID)</div>
 
   <button id="lock">🔒 锁定 (关)</button>
-  <div class="hint">点一下: 本端光标被拉回屏幕中心, 手只控制另一台机器。再点一下或按 Esc 退出。</div>
+  <div class="hint">点一下: 全屏黑屏, 本端光标被拉回屏幕中心, 手只控制另一台机器。再点一下或按 Esc 退出全屏和锁定。</div>
 
   <div class="row"><span class="dot" id="dot"></span><span id="state">未锁定</span></div>
 
@@ -69,7 +73,8 @@
 <div class="screen hidden" id="screen">
   <div class="slot" id="slot"></div>
   <div class="mini" id="mini">—</div>
-  <div class="esc">按 Esc 退出</div>
+  <div class="fsline" id="fsline">全屏: —</div>
+  <div class="esc">按 Esc 退出全屏和锁定</div>
 </div>
 
 <script>
@@ -81,7 +86,9 @@ const panel = document.getElementById('panel');
 const screen = document.getElementById('screen');
 const slot = document.getElementById('slot');
 const mini = document.getElementById('mini');
+const fsline = document.getElementById('fsline');
 const home = btn.parentNode;          // 只有一个按钮: 锁定时把它搬到黑屏里, 解锁时搬回来
+let exitByUs = false;                 // 我们自己退出的全屏, 不能再当成"按 Esc 退出"处理
 
 function showLock(on) {
   if (on) {
@@ -92,7 +99,13 @@ function showLock(on) {
     screen.classList.add('hidden');
     panel.classList.remove('hidden');
     home.appendChild(btn);
+    if (document.fullscreenElement) { exitByUs = true; document.exitFullscreen(); }
   }
+}
+
+function showFs(on, err) {
+  fsline.textContent = on ? '全屏: 开' : ('全屏: 没进' + (err ? ' — ' + err : ''));
+  fsline.className = 'fsline' + (on ? '' : ' bad');
 }
 
 async function api(path, body) {
@@ -102,9 +115,26 @@ async function api(path, body) {
   return r.json();
 }
 
-btn.addEventListener('click', () => api('/api/lock', { toggle: true }));
+/* requestFullscreen 只能在用户手势里调用, 所以点按钮时先进全屏, 再发请求。 */
+btn.addEventListener('click', () => {
+  if (!locked) {
+    try { screen.requestFullscreen(); } catch (e) { showFs(false, e.message); }
+  } else if (document.fullscreenElement) {
+    exitByUs = true;
+    document.exitFullscreen();
+  }
+  api('/api/lock', { toggle: true });
+});
 
-// 参考实现的 Esc 是在后端用键盘监听做的; 这里前端就是页面, 所以按 Esc 直接解锁。
+// 全屏里按 Esc 被浏览器用掉了(先退出全屏), keydown 收不到 —— 所以"退出全屏"就等于"退出锁定"。
+document.addEventListener('fullscreenchange', () => {
+  const on = !!document.fullscreenElement;
+  if (exitByUs) { exitByUs = false; showFs(on); return; }
+  showFs(on);
+  if (!on && locked) api('/api/lock', { enabled: false });
+});
+
+// 非全屏时按 Esc 仍然直接解锁。
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && locked) api('/api/lock', { enabled: false });
 });
@@ -136,6 +166,7 @@ async function poll() {
   set('cursor', d.cursor ? d.cursor.x + ',' + d.cursor.y : '—');
   set('recenter', d.recenter);
   mini.textContent = d.rate + ' 包/秒 · ' + d.sent.total + ' 包 · 拉回中心 ' + d.recenter;
+  showFs(!!document.fullscreenElement);
 
   if (d.verdict) {
     verdict.textContent = d.verdict;

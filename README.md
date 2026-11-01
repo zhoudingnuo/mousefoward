@@ -105,7 +105,7 @@ powershell -File tools/forward.ps1 -NoKeyboard    # 只转发鼠标
 
 转发路径里没有任何会挂住的调用：读状态行是一个会挂住的往返（实测每次 1.5 s），挂住的这段时间采集线程还在出包，读回来以后一次性全倒出去，那边就是"卡一下然后跳一段"。所以帧率从包数自己算，状态行只在安静了 5 秒以后读（那时候没有在转发），读不到就退避 30 秒。
 
-`capture.ps1 -Live` 每 60 ms 读一次光标，上限 16.7 包/秒，而且没有键盘采集。`forward.ps1` 不轮询：注册 Raw Input（`WM_INPUT` + `RIDEV_INPUTSINK`），系统每来一个事件就出一个包，包率 = 系统事件率（鼠标一般 125~1000 Hz）。增量超过 ±127 拆成多个包（中间的包只带移动，最后一个带按键和滚轮），键盘按 VKey → HID usage 出 6KRO 快照。
+`capture.ps1 -Live` 每 60 ms 读一次光标，上限 16.7 包/秒，而且没有键盘采集。`forward.ps1` 的采集线程不轮询：注册 Raw Input（`WM_INPUT` + `RIDEV_INPUTSINK`），用挂住的 `GetMessage` 处理，并 `timeBeginPeriod(1)`。以前是 `PeekMessage` + `Thread.Sleep(1)` 轮询，而系统计时精度默认是 15.625 ms，`Sleep(1)` 实际睡 15.58 ms，一圈 15.58 ms → 每秒只转 64 圈，事件要等到下一轮才处理（实测投 200 个消息：轮询平均 15.6 ms、最大 20 ms；改成挂住的 `GetMessage` 是 0 ms）。包率 = 系统事件率，天花板是鼠标自己的上报率（常见 125 Hz）。增量超过 ±127 拆成多个包（中间的包只带移动，最后一个带按键和滚轮），键盘按 VKey → HID usage 出 6KRO 快照。
 
 `-SelfTest` 只能验映射和拆分：这台机器上 `RIDEV_EXINPUTSINK` 被拒（错误 87），`SendInput` 注入的事件到不了 Raw Input，所以事件路径要靠真的操作鼠标键盘。
 
@@ -120,6 +120,8 @@ powershell -File app/server.ps1 -DryRun    # 不开串口，只统计包（接�
 ```
 
 点一下 = 参考实现的锁定模式：本端光标被拉回屏幕中心（跑过半屏的 80%），手只控制另一台机器；再点一下或按 Esc 退出。转发路径不变（参考实现里也没有改它，它连 `mouse.set_suppress()` 都没调用）。
+
+锁定时是**真全屏**的黑屏：点按钮时调用 `requestFullscreen()`（只能在用户手势里同步调用，所以先进全屏再发请求），`::backdrop` 也设成黑色。全屏里按 Esc 被浏览器先用来退出全屏，`keydown` 收不到，所以在 `fullscreenchange` 里处理：退出全屏 = 退出锁定。实测（在浏览器里点按钮）：`document.fullscreenElement` 指向 `#screen`，`#panel` 被隐藏，`#screen` 是 `rgb(0,0,0)` 铺满整个视口，按钮被搬进黑屏里；按 Esc 退出全屏并解锁，再点一次回到原面板。采集走 Raw Input（`RIDEV_INPUTSINK`），和焦点在哪个窗口无关，所以黑屏期间转发照旧。
 
 接口两种用法：转发（本机的输入原样送过去）和主动控制（程序自己发坐标和按键，不动本机的光标）。接口文档在 `api.md`，命令行客户端是 `tools/api.ps1`。
 
