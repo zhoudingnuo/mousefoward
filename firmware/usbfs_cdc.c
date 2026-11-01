@@ -218,10 +218,18 @@ void USBFS_IRQHandler( void )
 
                 if( ep == 0 )
                 {
-                    if(( intst & USBFS_UIS_TOG_OK ) && ( setup_type & USB_REQ_TYP_MASK ) == USB_REQ_TYP_CLASS )
+                    if( USBFSD->RX_LEN > 0 )
                     {
-                        if( setup_req == CDC_SET_LINE_CODING )
-                            memcpy( line_coding, ep0_buf, 7 );
+                        if(( intst & USBFS_UIS_TOG_OK ) && ( setup_type & USB_REQ_TYP_MASK ) == USB_REQ_TYP_CLASS )
+                        {
+                            if( setup_req == CDC_SET_LINE_CODING )
+                                memcpy( line_coding, ep0_buf, 7 );
+                        }
+
+                        /* 数据阶段到这里就结束了。setup_len 不清零的话, 下面那个分支
+                         * 永远轮不到, 状态阶段发不出去 —— 串口驱动打开端口时发的
+                         * SET_LINE_CODING 就卡在这里, COM 口存在但打不开。 */
+                        setup_len = 0;
                     }
 
                     if( setup_len == 0 )
@@ -306,6 +314,9 @@ void USBFS_IRQHandler( void )
                             len = 1;
                             p_descr = ep0_buf;
                             break;
+
+                        case USB_SET_INTERFACE:
+                            break;                          /* 只有一个 alt setting, 空状态阶段即可 */
 
                         case USB_GET_STATUS:
                             ep0_buf[ 0 ] = 0;

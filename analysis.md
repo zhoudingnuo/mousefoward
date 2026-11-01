@@ -93,7 +93,29 @@ v3 的 README 写"现在已去掉这段 GPIO 配置，PA2/PA3 归指示灯独占
 
 ## 三、现在这一版：还没通的部分
 
-COM 口出来了，说明第一节的根因已经修掉。转发还没通，最可能的原因是这一层：
+### 先修一条：COM 口能出现，但打不开
+
+被识别为串口这件事本身已经成立。实测（本机，板子接着）：
+
+```
+USB 串行设备 (COM3) | USB\VID_1A86&PID_000D&MI_00\7&207F8320&0&0000 | class {4d36e978-...} = Ports
+```
+
+设备被 `usbser.sys` 绑定、分到 COM3、状态 OK —— 描述符里该有的都有：IAD、控制接口 `bInterfaceSubClass = 0x02 / bInterfaceProtocol = 0x01`、四个功能描述符、通知端点。所以第一节的根因确实修掉了。
+
+但 `SerialPort.Open('COM3')` 卡住不返回（跑了 12 秒没完成）。串口存在，用不了。
+
+原因在 EP0 的 OUT 分支：数据阶段处理完 `SET_LINE_CODING` 的 7 个字节后，`setup_len` 没有清零，于是下面那个"状态阶段"分支永远轮不到 —— 控制传输走不完。打开串口时驱动正好发这条请求，所以 `Open()` 挂死。
+
+对照 WCH 的参考实现（`ch32v30x_usbfs_device.c:352`）：非标准请求的数据下载一进来就 `USBFS_SetupReqLen = 0`，紧接着的 `if (SetupReqLen == 0)` 才把状态阶段 arm 上。这一版漏的就是这一句。
+
+改法（`firmware/usbfs_cdc.c`）：收到字节（`RX_LEN > 0`）就是数据阶段，处理完把 `setup_len` 清零；`RX_LEN == 0` 的那个 OUT 才是状态阶段。另外补了 `SET_INTERFACE`（0x0B）的空状态阶段——只有一个 alt setting，但 Windows 可能发这条标准请求，走 default 会被 STALL。
+
+烧新 hex 之后 `tools/send_test.ps1` 才可能读到状态行。
+
+### 转发还没通
+
+转发还没通，最可能的原因是这一层：
 
 **固件只转发"本端写到虚拟串口的字节"。它不会自己去抓本端的鼠标键盘。** 本端的动作要有一个程序读出来、按协议写成字节、发到 COM 口；这一版固件里没有对应的上位机程序，所以动鼠标不会有任何反应。
 

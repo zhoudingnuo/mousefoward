@@ -1,26 +1,49 @@
 # 往板子的虚拟串口直接发协议字节, 看另一台机器的光标动不动。
 # 这一步只验证板子本身, 不需要上位机程序。
 #
-#   powershell -File tools/send_test.ps1 -Com COM5
-#   powershell -File tools/send_test.ps1                      # 列出可用串口
+#   powershell -File tools/send_test.ps1                # 自己找板子的 COM 口
+#   powershell -File tools/send_test.ps1 -Com COM5      # 指定
+#   powershell -File tools/send_test.ps1 -List          # 列出可用串口
 
 param(
     [string]$Com = '',
     [int]$Count = 30,
-    [int]$DelayMs = 50
+    [int]$DelayMs = 50,
+    [switch]$List
 )
 
-$ports = [System.IO.Ports.SerialPort]::GetPortNames()
+# 板子的 CDC 口: VID 1A86, 被 usbser.sys 绑定后设备名里带 (COMx)
+function FindCdcPort()
+{
+    $d = Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction SilentlyContinue |
+        Where-Object { $_.PNPDeviceID -match 'VID_1A86' -and $_.Name -match 'COM\d+' }
+    foreach( $e in $d )
+    {
+        $m = [regex]::Match( $e.Name, 'COM\d+' )
+        if( $m.Success ) { return $m.Value }
+    }
+    return ''
+}
+
+if( $List )
+{
+    Write-Output '可用串口:'
+    $p = [System.IO.Ports.SerialPort]::GetPortNames()
+    if( -not $p ) { Write-Output '  (无)' }
+    $p | ForEach-Object { Write-Output "  $_" }
+    exit 0
+}
+
 if( -not $Com )
 {
-    if( -not $ports )
+    $Com = FindCdcPort
+    if( -not $Com )
     {
-        Write-Output '没有可用串口。板子是否已枚举 (灯 3Hz)?'
+        Write-Output '没找到板子的串口 (VID 1A86 的设备没有被 usbser.sys 绑定)。'
+        Write-Output '用 -List 看现有串口, 或 -Com 指定。'
         exit 1
     }
-    Write-Output '可用串口:'
-    $ports | ForEach-Object { Write-Output "  $_  (用 -Com 指定)" }
-    exit 1
+    Write-Output ( '板子的串口: ' + $Com )
 }
 
 function Packet( [int[]]$bytes )
@@ -37,6 +60,8 @@ function ReadAnswer( $p )
     try { return $p.ReadExisting() } catch { return '(读不到, 板子没回)' }
 }
 
+# 如果这一行卡住不返回: 固件的状态阶段没 arm, 驱动打开端口时发的
+# SET_LINE_CODING 走不完 (见 analysis.md 第三节)。
 $p = New-Object System.IO.Ports.SerialPort $Com, 115200, None, 8, One
 $p.Open()
 
