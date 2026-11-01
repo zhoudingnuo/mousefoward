@@ -63,6 +63,16 @@ powershell -File tools/send_test.ps1 -Com COM5
 
 往 COM 口发鼠标包和键盘包，看另一台机器的光标动不动。
 
+## 转发本机的鼠标
+
+```powershell
+powershell -File tools/capture.ps1
+```
+
+每 20 ms 读一次本机光标位置，把增量写成鼠标包发到 COM 口（`dx`/`dy` 钳到 ±127，一个 HID 报告能带的最大增量）。按键状态从 `GetKeyState` 读，放在 `flags`。串口自己按 VID 1A86 找，不用手动指定；`-DryRun` 只打印包、不开串口。
+
+桌面上放一个快捷方式指向这条命令，双击即开始转发。
+
 ## 目录
 
 | 文件 | 说明 |
@@ -76,3 +86,4 @@ powershell -File tools/send_test.ps1 -Com COM5
 | `firmware/firmware.hex` | 当前构建产物 |
 | `analysis.md` | 失败分析（上一版为什么报 Code 43，v3 为什么跑不通） |
 | `tools/send_test.ps1` | 直接往 COM 口发包 |
+| `tools/capture.ps1` | 读本机鼠标 → 写成包发到 COM 口 |
