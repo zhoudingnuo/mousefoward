@@ -73,15 +73,23 @@ powershell -File tools/status_test.ps1
 
 发一个鼠标包、一个键盘包，中间读状态行。板子上当前烧的这一版数据位不翻转，总线复位后只能读到第一行，第二行会超时；烧 `firmware/firmware.hex`（它已经修了这条）之后能连续读。
 
-## 转发本机的鼠标
+## 跑一段写死的轨迹
 
 ```powershell
 powershell -File tools/capture.ps1
 ```
 
-每 20 ms 读一次本机光标位置，把增量写成鼠标包发到 COM 口（`dx`/`dy` 钳到 ±127，一个 HID 报告能带的最大增量）。按键状态从 `GetKeyState` 读，放在 `flags`。串口自己按 VID 1A86 找，不用手动指定；`-DryRun` 只打印包、不开串口。
+脚本里写死了一段轨迹：半径 60 像素的圆，24 步、每步最大 16 像素（一个 HID 报告最多带 ±127），每步 60 ms。另一台机器的光标照着画出一个圆，就说明整条通路是通的；画不出来就是某一段断了。每圈开头按一下左键，方便在那边确认。
 
-桌面上放一个快捷方式指向这条命令，双击即开始转发。
+```powershell
+powershell -File tools/capture.ps1 -Live          # 改成转发真实鼠标（每 20 ms 读光标）
+powershell -File tools/capture.ps1 -DryRun        # 只打印包，不开串口
+powershell -File tools/capture.ps1 -Loops 10      # 跑 10 圈
+```
+
+`-Live` 那条是读本机光标位置、把增量写成包；按键状态从 `GetKeyState` 读，放在 `flags`。串口自己按 VID 1A86 找，不用手动指定。
+
+桌面上放一个快捷方式指向这条命令，双击即开始跑轨迹。
 
 ## 目录
 
@@ -96,5 +104,5 @@ powershell -File tools/capture.ps1
 | `firmware/firmware.hex` | 当前构建产物 |
 | `analysis.md` | 失败分析（上一版为什么报 Code 43，v3 为什么跑不通） |
 | `tools/send_test.ps1` | 直接往 COM 口发包 |
-| `tools/capture.ps1` | 读本机鼠标 → 写成包发到 COM 口 |
+| `tools/capture.ps1` | 跑写死的轨迹（一个圆）发到 COM 口；`-Live` 转发真实鼠标 |
 | `tools/status_test.ps1` | 阻塞读状态行（`ReadExisting()` 读不到，必须挂一个读请求） |
