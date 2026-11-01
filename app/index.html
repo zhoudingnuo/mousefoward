@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>鼠标转发 · 锁定</title>
+<style>
+  /* 和参考实现一样的深色面板: 一个按钮 + 实时状态。这里只要一个按钮。 */
+  :root {
+    --bg: #16181c; --panel: #1d2025; --line: #2a2f36; --text: #d7dbe0;
+    --dim: #8b939d; --accent: #4f8ef7; --warn: #e0a03a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width: 620px; margin: 0 auto; padding: 24px 20px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 20px; }
+  button {
+    width: 100%; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); color: var(--text); font-size: 15px; cursor: pointer;
+  }
+  button.on { border-color: var(--warn); background: #2a2118; color: #f0c88a; }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 8px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 14px 0 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #454b53; }
+  .dot.ok { background: #3fbf6a; }
+  .dot.warn { background: var(--warn); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin-top: 10px; }
+  .cell { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .k { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .v { font-family: Consolas, monospace; font-size: 15px; margin-top: 3px; }
+  .v.neg { color: var(--accent); }
+  #verdict { margin-top: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px;
+            background: var(--panel); font-size: 13px; white-space: pre-wrap; }
+  #verdict.bad { border-color: #a04a4a; color: #e88b8b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>鼠标转发 · 锁定</h1>
+  <div class="sub">本端 → 板子(USBFS CDC) → 另一台机器(USBHS HID)</div>
+
+  <button id="lock">🔒 锁定 (关)</button>
+  <div class="hint">点一下: 本端光标被拉回屏幕中心, 手只控制另一台机器。再点一下或按 Esc 退出。</div>
+
+  <div class="row"><span class="dot" id="dot"></span><span id="state">未锁定</span></div>
+
+  <div class="grid">
+    <div class="cell"><div class="k">包率</div><div class="v" id="rate">0 /s</div></div>
+    <div class="cell"><div class="k">已发</div><div class="v" id="sent">0</div></div>
+    <div class="cell"><div class="k">本端串口</div><div class="v" id="port">—</div></div>
+    <div class="cell"><div class="k">采集</div><div class="v" id="cap">—</div></div>
+    <div class="cell"><div class="k">本端光标</div><div class="v" id="cursor">—</div></div>
+    <div class="cell"><div class="k">拉回中心</div><div class="v" id="recenter">0</div></div>
+  </div>
+
+  <div id="verdict">还没有状态行。安静 5 秒以后才会读(转发的路上不能读: 那是一个会挂住的往返)。</div>
+</div>
+
+<script>
+const btn = document.getElementById('lock');
+const dot = document.getElementById('dot');
+const stateText = document.getElementById('state');
+const verdict = document.getElementById('verdict');
+
+async function api(path, body) {
+  const opt = { method: body ? 'POST' : 'GET' };
+  if (body) { opt.headers = { 'Content-Type': 'application/json' }; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  return r.json();
+}
+
+btn.addEventListener('click', () => api('/api/lock', { toggle: true }));
+
+// 参考实现的 Esc 是在后端用键盘监听做的; 这里前端就是页面, 所以按 Esc 直接解锁。
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && locked) api('/api/lock', { enabled: false });
+});
+
+let locked = false;
+
+function set(id, text, neg) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'v' + (neg ? ' neg' : '');
+}
+
+async function poll() {
+  let d;
+  try { d = await (await fetch('/api/state')).json(); } catch (e) { return; }
+
+  locked = d.lock;
+  btn.textContent = locked ? '🔓 锁定 (开) — 按 Esc 退出' : '🔒 锁定 (关)';
+  btn.className = locked ? 'on' : '';
+  dot.className = locked ? 'dot warn' : 'dot';
+  stateText.textContent = locked ? '已锁定 — 本端光标被拉回中心, 手只控制另一台机器' : '未锁定';
+
+  set('rate', d.rate + ' 包/秒');
+  set('sent', d.sent.total + ' 包 (接口 ' + d.sent.queued + ')');
+  set('port', d.port || '没开串口');
+  set('cap', d.capture.registered ? '已注册 ' + d.capture.nInput + ' 个事件' : '未注册: ' + d.capture.stage);
+  set('cursor', d.cursor ? d.cursor.x + ',' + d.cursor.y : '—');
+  set('recenter', d.recenter);
+
+  if (d.verdict) {
+    verdict.textContent = d.verdict;
+    verdict.className = /没被|读不到|断了|一直忙|没多|读不全/.test(d.verdict) ? 'bad' : '';
+  }
+}
+
+poll();
+setInterval(poll, 200);
+</script>
+</body>
+</html>

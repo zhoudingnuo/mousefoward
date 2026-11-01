@@ -111,6 +111,22 @@ powershell -File tools/forward.ps1 -NoKeyboard    # 只转发鼠标
 
 桌面快捷方式指向这条。
 
+## 前端（只有一个锁定按钮）
+
+```powershell
+powershell -File app/server.ps1            # 起服务，浏览器打开 http://localhost:8765
+powershell -File app/server.ps1 -Open      # 起服务并打开浏览器
+powershell -File app/server.ps1 -DryRun    # 不开串口，只统计包（接口照样能调）
+```
+
+点一下 = 参考实现的锁定模式：本端光标被拉回屏幕中心（跑过半屏的 80%），手只控制另一台机器；再点一下或按 Esc 退出。转发路径不变（参考实现里也没有改它，它连 `mouse.set_suppress()` 都没调用）。
+
+接口两种用法：转发（本机的输入原样送过去）和主动控制（程序自己发坐标和按键，不动本机的光标）。接口文档在 `api.md`，命令行客户端是 `tools/api.ps1`。
+
+实测：`{"dx":200,"dy":0}` 出 2 个包（超过 ±127 被拆），`{"vk":65,"down":true}` 出 1 个 6KRO 快照；锁定以后把光标放到离中心 732/368 的位置，两秒内被拉回中心，`WM_INPUT` 计数不变 —— 程序改光标不产生 Raw Input 事件，所以不需要参考实现里拉回以前的 `skip_next_move()`（它用低级钩子，会被自己发的移动绊到）。
+
+主循环里不能有会挂住的调用，所以 HTTP 用 `BeginGetContext`，状态行照旧只在安静的时候读（`POST /api/status` 只是排队，结果存着给 `/api/state`）。
+
 ## 目录
 
 | 文件 | 说明 |
@@ -127,3 +143,8 @@ powershell -File tools/forward.ps1 -NoKeyboard    # 只转发鼠标
 | `tools/capture.ps1` | 跑写死的轨迹（一个圆）+ 读状态行，判断链路断在哪一段 |
 | `tools/forward.ps1` | 事件驱动转发：Raw Input 取鼠标/键盘事件，一个事件一个包 |
 | `tools/status_test.ps1` | 阻塞读状态行（`ReadExisting()` 读不到，必须挂一个读请求） |
+| `tools/lib.ps1` | 采集和串口两段，`forward.ps1` 和 `app/server.ps1` 共用同一份 |
+| `tools/api.ps1` | 从命令行调接口（主动控制） |
+| `app/server.ps1` | 后端：采集 + 写串口 + 锁定 + HTTP 接口 |
+| `app/index.html` | 前端：只有一个锁定按钮 |
+| `api.md` | 接口文档：怎么调用我们的软件控制另一台机器（转发 + 主动控制） |
