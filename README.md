@@ -41,6 +41,8 @@ S cdc=1 hs=1 req=1 ok=0 err=0 drop=0 ms=0 kb=0
 
 `ok` 不涨 = 本端没有字节进来；`ok` 涨但 `ms`/`kb` 不涨 = 解析通过但端点没发出去；`ms`/`kb` 涨而另一台机器不动 = 另一台机器那边的 HID 问题。
 
+读这行必须用阻塞读：驱动只有在有一个读请求挂着的时候才会去取设备的 IN 数据，`ReadExisting()` 只清驱动缓冲区，永远读不到。`tools/status_test.ps1` 用 kernel32 的 `CreateFile` + `ReadFile` 做阻塞读。
+
 ## 构建
 
 ```powershell
@@ -62,6 +64,14 @@ powershell -File tools/send_test.ps1 -Com COM5
 ```
 
 往 COM 口发鼠标包和键盘包，看另一台机器的光标动不动。
+
+发完包读状态：
+
+```powershell
+powershell -File tools/status_test.ps1
+```
+
+发一个鼠标包、一个键盘包，中间读状态行。板子上当前烧的这一版数据位不翻转，总线复位后只能读到第一行，第二行会超时；烧 `firmware/firmware.hex`（它已经修了这条）之后能连续读。
 
 ## 转发本机的鼠标
 
@@ -87,3 +97,4 @@ powershell -File tools/capture.ps1
 | `analysis.md` | 失败分析（上一版为什么报 Code 43，v3 为什么跑不通） |
 | `tools/send_test.ps1` | 直接往 COM 口发包 |
 | `tools/capture.ps1` | 读本机鼠标 → 写成包发到 COM 口 |
+| `tools/status_test.ps1` | 阻塞读状态行（`ReadExisting()` 读不到，必须挂一个读请求） |

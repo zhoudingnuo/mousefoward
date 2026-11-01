@@ -55,9 +55,11 @@ function Packet( [int[]]$bytes )
 
 function ReadAnswer( $p )
 {
+    # 必须阻塞读: 驱动只有在有一个读请求挂着的时候才会去取设备的数据,
+    # ReadExisting() 只清驱动缓冲区, 永远读不到板子的 IN 数据。
     $p.DiscardNull = $true
-    $p.ReadTimeout = 1000
-    try { return $p.ReadExisting() } catch { return '(读不到, 板子没回)' }
+    $p.ReadTimeout = 2000
+    try { return $p.ReadLine() } catch { return '(读不到, 板子没回)' }
 }
 
 # 如果这一行卡住不返回: 固件的状态阶段没 arm, 驱动打开端口时发的
