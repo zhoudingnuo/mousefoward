@@ -134,7 +134,7 @@ static void km_endp_init( void )
 
     USBHSD->UEP0_MAX_LEN = EP0_SZ;
     USBHSD->UEP1_MAX_LEN = 8;
-    USBHSD->UEP2_MAX_LEN = 4;
+    USBHSD->UEP2_MAX_LEN = 8;                 /* 和描述符里声明的 wMaxPacketSize 一致 */
 
     USBHSD->UEP0_DMA    = (uint32_t)ep0_buf;
     USBHSD->UEP1_TX_DMA = (uint32_t)kb_buf;
@@ -268,6 +268,11 @@ static void hs_setup_stage( void )
                 ep0_buf[ 0 ] = ( setup_req == USB_GET_CONFIGURATION ) ? dev_config : 0;
                 len = 1;
                 p_descr = ep0_buf;
+                break;
+
+            case USB_SET_INTERFACE:
+                /* 没有备用设置, 接受就行。参考实现也是空处理; 之前这里落到
+                 * default 被 stall, Windows 绑定接口时会发这条请求。 */
                 break;
 
             case USB_GET_STATUS:
