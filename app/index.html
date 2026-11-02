@@ -163,7 +163,15 @@ async function poll() {
   set('sent', d.sent.total + ' 包 (接口 ' + d.sent.queued + ')');
   set('port', d.port || '没开串口');
   const c = d.capture;
-  set('cap', c.registered ? ('鼠标 ' + c.mouse + ' · 键盘 ' + c.key + (c.unmapped ? ' · 没映射 ' + c.unmapped : '')) : '未注册: ' + c.stage);
+  let cap = c.registered ? ('鼠标 ' + c.mouse + ' · 键盘 ' + c.key + (c.unmapped ? ' · 没映射 ' + c.unmapped : '')) : '未注册: ' + c.stage;
+  /* 映射没命中时只有这里能看出问题: 真事件的原始字节存了前 5 个, 最后一个的 VKey 直接显示。
+   * 如果这个值本身不在表里, 那是表缺键; 如果字节里 0x41 不在 VKey 该在的位置, 那是分界错了。 */
+  if (c.dumps && c.dumps.length) {
+    const last = c.dumps[c.dumps.length - 1];
+    const m = last.match(/VKey=(0x[0-9A-F]+)/);
+    cap += ' · 最后一个键 VKey ' + (m ? m[1] : '?');
+  }
+  set('cap', cap);
   set('cursor', d.cursor ? d.cursor.x + ',' + d.cursor.y : '—');
   set('recenter', d.recenter);
   mini.textContent = d.rate + ' 包/秒 · ' + d.sent.total + ' 包 · 拉回中心 ' + d.recenter;

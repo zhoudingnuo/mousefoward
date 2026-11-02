@@ -156,7 +156,7 @@ try
 
     if( $SelfTest )
     {
-        # 事件路径不能自己喂自己: 注入的事件收不到(EXINPUTSINK 被这台机器拒了),
+        # 事件路径不能自己喂自己: 注入的事件收不到(SendInput 在这个进程里失败, 没有可交互桌面),
         # 所以这里只验能确定的两段逻辑, 事件路径只看注册走到哪一步。
         Start-Sleep -Milliseconds 500
         $r = '失败'
@@ -165,10 +165,17 @@ try
         # 这半段是能真的验的: 这 0.5 秒里真动鼠标、真按键, 这里的数就会动。
         # 键盘到底停在"事件没到"还是"映射没命中", 只有这两个数能分开。
         Write-Output ( '真事件: 鼠标 ' + [RawCap]::nMouse + ' 键盘 ' + [RawCap]::nKeyEvents + ' 没映射 ' + [RawCap]::nKeyUnmapped + ' (下面摆的字节不算)' )
+        if( [RawCap]::KeyDumps.Count -gt 0 )
+        {
+            Write-Output '真键盘事件:'
+            foreach( $d in [RawCap]::KeyDumps ) { Write-Output ( '  ' + $d ) }
+        }
 
         Write-Output '映射:'
         $bad = 0
-        foreach( $p in @( @( 0x41, 0x04 ), @( 0x11, 0xE0 ), @( 0x0D, 0x28 ), @( 0x20, 0x2C ), @( 0x30, 0x27 ), @( 0x70, 0x3E ) ) )
+        foreach( $p in @( @( 0x41, 0x04 ), @( 0x11, 0xE0 ), @( 0x0D, 0x28 ), @( 0x20, 0x2C ), @( 0x30, 0x27 ),
+                           @( 0x70, 0x3A ), @( 0x14, 0x39 ), @( 0xE2, 0x34 ), @( 0x25, 0x50 ), @( 0x21, 0x4B ),
+                           @( 0x61, 0x59 ), @( 0x90, 0x53 ) ) )
         {
             $got = [RawCap]::Usage( $p[0] )
             if( $got -ne $p[1] )
@@ -197,6 +204,18 @@ try
         [RawCap]::FeedImage( $k, 1 )
         $k[4] = 1                                                    # Flags = 1 -> 抬起
         [RawCap]::FeedImage( $k, 1 )
+        while( $true ) { $pk = Take $q; if( -not $pk ) { break }; Write-Output ( '  包: ' + ( Hex $pk ) ) }
+
+        # 整块(头 + 数据): 真事件走的是这一条。上面只摆数据部分, 头和数据的分界从来没被验过,
+        # 键盘"全都没映射"就卡在这一条上。这里按 C 的布局把头也摆出来, 走同一个 Parse。
+        Write-Output '整块(头+数据):'
+        [RawCap]::Reset()
+        $hs = [int]( [RawCap]::HeaderSize() )
+        $full = New-Object -TypeName byte[] -ArgumentList ( $hs + 20 )
+        $full[0] = 1                                                  # dwType = keyboard
+        $full[4] = [byte]( $hs + 20 )                               # dwSize
+        $full[$hs + 10] = 0x41                                      # VKey = 'a'
+        [RawCap]::FeedRaw( $full )
         while( $true ) { $pk = Take $q; if( -not $pk ) { break }; Write-Output ( '  包: ' + ( Hex $pk ) ) }
 
         # 按下→抬起: 状态必须写回并保持, 不然每一包的按钮都是 0(点击转不过去)。

@@ -115,6 +115,7 @@ function StateJson()
             mouse      = [int]( [RawCap]::nMouse )
             key        = [int]( [RawCap]::nKeyEvents )
             unmapped   = [int]( [RawCap]::nKeyUnmapped )
+            dumps      = @( [RawCap]::KeyDumps )
         }
         sent    = @{ total = [int]$script:total; queued = [int]$script:ctrl }
         rate    = [math]::Round( $script:rate, 1 )

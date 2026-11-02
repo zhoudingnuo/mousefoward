@@ -15,6 +15,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 public class RawCap {
@@ -25,9 +26,11 @@ public class RawCap {
 
     const int WM_INPUT = 0x00FF;
     const int RIDEV_INPUTSINK = 0x100;      // 焦点不在本进程也收
-    /* RIDEV_EXINPUTSINK(0x10) 本来是用来收 SendInput 注入的事件的, 但这台机器上
-     * RegisterRawInputDevices 带这个 flag 一律返回错误 87(单个和组合都试过),
-     * 所以注入的事件收不到。自测因此不走事件路径, 直接调映射和拆分。 */
+    /* RIDEV_EXINPUTSINK 是 0x1000, 不是 0x10。以前传的是 0x10, 那个值本身不合法,
+     * 所以报的 87 是我们自己写错值, 不是这台机器拒绝这个 flag: 用 0x1000(和 0x100|0x1000)
+     * RegisterRawInputDevices 都成功。但 SendInput 在这个进程里还是失败(没有可交互桌面),
+     * 所以事件路径不能自己喂自己, 自测只能摆字节。 */
+    const int RIDEV_EXINPUTSINK = 0x1000;   // 收注入的事件(这里用不上)
     const int RID_INPUT = 0x10000003;
     const uint PM_REMOVE = 1;
 
@@ -99,7 +102,9 @@ public class RawCap {
 
     /* 每一步是走通了还是没走通, 不能靠"有没有包"猜。
      * 鼠标和键盘要分开数: 键盘停在哪儿只有三种可能 —— 事件没到、VKey 不在表里、包没写出去。
-     * 光看包数分不出是哪一种, 所以这里三个数都数。 */
+     * 光看包数分不出是哪一种, 所以这里三个数都数。
+     * nInput 以前在消息循环和 WndProc 里各加一次, 所以它正好是鼠标+键盘的两倍(实测 5754 = 2*2877)。
+     * 只在 WndProc 里数一次以后, nInput 应该等于鼠标数 + 键盘数 + HID 数; 不相等就是有别的类型。 */
     public static bool Registered = false;
     public static int nInput = 0;
     public static int nMouse = 0;
@@ -108,6 +113,16 @@ public class RawCap {
     static bool testFeed = false;              // 自测摆的字节不能算进"真事件"的数
     public static string Stage = "";
     public static IntPtr Hwnd = IntPtr.Zero;
+
+    /* 真事件的原始字节, 存前 5 个键盘事件。自测只能摆数据部分(注入收不到), 真事件里
+     * VKey 到底是几、数据到底从哪个偏移开始, 只有这里能看出来。 */
+    public static readonly List<string> KeyDumps = new List<string>();
+
+    static string Hex(byte[] b) {
+        StringBuilder s = new StringBuilder();
+        for (int i = 0; i < b.Length; i++) s.Append(b[i].ToString("X2")).Append(' ');
+        return s.ToString();
+    }
 
     static void Loop() {
         WNDCLASSEX wc = new WNDCLASSEX();
@@ -143,7 +158,6 @@ public class RawCap {
         MSG msg = new MSG();
         while (true) {
             if (!GetMessage(ref msg, IntPtr.Zero, 0, 0)) continue;
-            if (msg.message == WM_INPUT) nInput++;
             TranslateMessage(ref msg);
             DispatchMessage(ref msg);
         }
@@ -176,12 +190,30 @@ public class RawCap {
         IntPtr buf = Marshal.AllocHGlobal((int)size);
         try {
             if (GetRawInputData(lParam, RID_INPUT, buf, ref size, (uint)Marshal.SizeOf(typeof(RAWINPUTHEADER))) == 0) return;
-            RAWINPUTHEADER h = (RAWINPUTHEADER)Marshal.PtrToStructure(buf, typeof(RAWINPUTHEADER));
-            IntPtr data = IntPtr.Add(buf, Marshal.SizeOf(typeof(RAWINPUTHEADER)));
-            if (h.dwType == 0) { nMouse++; HandleMouse((RAWMOUSE)Marshal.PtrToStructure(data, typeof(RAWMOUSE))); }
-            else if (h.dwType == 1) { nKeyEvents++; HandleKey((RAWKEYBOARD)Marshal.PtrToStructure(data, typeof(RAWKEYBOARD))); }
+            Parse(buf, size);
         } finally {
             Marshal.FreeHGlobal(buf);
+        }
+    }
+
+    /* 头和数据的分界单独一个函数: 真事件和自测摆的整块走同一条, 这样自测也能验到分界。
+     * 以前自测只摆数据部分, 分界这一段从来没被验过 —— 键盘"全都没映射"就卡在这里。 */
+    static void Parse(IntPtr buf, uint size) {
+        RAWINPUTHEADER h = (RAWINPUTHEADER)Marshal.PtrToStructure(buf, typeof(RAWINPUTHEADER));
+        int hsize = Marshal.SizeOf(typeof(RAWINPUTHEADER));
+        IntPtr data = IntPtr.Add(buf, hsize);
+
+        if (h.dwType == 0) { nMouse++; HandleMouse((RAWMOUSE)Marshal.PtrToStructure(data, typeof(RAWMOUSE))); }
+        else if (h.dwType == 1) {
+            nKeyEvents++;
+            RAWKEYBOARD k = (RAWKEYBOARD)Marshal.PtrToStructure(data, typeof(RAWKEYBOARD));
+            if (!testFeed && KeyDumps.Count < 5) {
+                byte[] bytes = new byte[(int)size];
+                Marshal.Copy(buf, bytes, 0, (int)size);
+                KeyDumps.Add("size=" + size + " header=" + hsize + " 字节: " + Hex(bytes) +
+                             " -> VKey=0x" + k.VKey.ToString("X2") + " usage=" + Usage(k.VKey));
+            }
+            HandleKey(k);
         }
     }
 
@@ -298,12 +330,16 @@ public class RawCap {
         Packets.Enqueue(pk);
     }
 
-    /* VK -> HID usage page 0x07。Raw Input 只给 VKey, 所以只能按 VK 反查。 */
+    /* VK -> HID usage page 0x07。Raw Input 只给 VKey, 所以只能按 VK 反查。
+     * 以前这里有几处是错的: 0x3A 不是 VK(Caps Lock 是 0x14), F1 是 usage 0x3A 不是 0x3E,
+     * 方向键的 usage 也整个错位(左 0x50、右 0x4F、上 0x52、下 0x51)。
+     * 缺的是 Caps/apostrophe/翻页/插入删除/小键盘/NumLock 这些。 */
     public static int Usage(int vk) {
         if (vk >= 0x41 && vk <= 0x5A) return 0x04 + (vk - 0x41);
         if (vk >= 0x31 && vk <= 0x39) return 0x1E + (vk - 0x31);
         if (vk == 0x30) return 0x27;
-        if (vk >= 0x70 && vk <= 0x7B) return 0x3E + (vk - 0x70);
+        if (vk >= 0x70 && vk <= 0x7B) return 0x3A + (vk - 0x70);          // F1-F12
+        if (vk >= 0x61 && vk <= 0x69) return 0x59 + (vk - 0x61);          // 小键盘 1-9
 
         switch (vk) {
             case 0x11: return 0xE0; case 0xA2: return 0xE0; case 0xA3: return 0xE4;
@@ -312,12 +348,18 @@ public class RawCap {
             case 0x5B: return 0xE3; case 0x5C: return 0xE7;
             case 0x0D: return 0x28; case 0x1B: return 0x29; case 0x08: return 0x2A;
             case 0x09: return 0x2B; case 0x20: return 0x2C;
+            case 0x14: return 0x39;                                        // Caps Lock
             case 0xBD: return 0x2D; case 0xBB: return 0x2E;
             case 0xDB: return 0x2F; case 0xDD: return 0x30; case 0xDC: return 0x31;
-            case 0xBA: return 0x33; case 0xDE: return 0x34; case 0xC0: return 0x35;
+            case 0xBA: return 0x33; case 0xE2: return 0x34; case 0xC0: return 0x35;
             case 0xBC: return 0x36; case 0xBE: return 0x37; case 0xBF: return 0x38;
-            case 0x3A: return 0x39;
-            case 0x25: return 0x55; case 0x26: return 0x52; case 0x27: return 0x53; case 0x28: return 0x54;
+            case 0x21: return 0x4B; case 0x22: return 0x4E; case 0x23: return 0x4D;
+            case 0x24: return 0x4A; case 0x2D: return 0x49; case 0x2E: return 0x4C;
+            case 0x2C: return 0x46; case 0x91: return 0x47; case 0x13: return 0x48;
+            case 0x90: return 0x53;
+            case 0x25: return 0x50; case 0x26: return 0x52; case 0x27: return 0x4F; case 0x28: return 0x51;
+            case 0x60: return 0x62; case 0x6E: return 0x63;
+            case 0x6A: return 0x55; case 0x6B: return 0x57; case 0x6C: return 0x54; case 0x6D: return 0x56;
         }
         return -1;
     }
@@ -337,6 +379,22 @@ public class RawCap {
         }
     }
 
+    /* 整块(头 + 数据)一起摆, 走 Parse 用的同一个分界。
+     * 只摆数据部分永远验不到分界本身, 所以这条是单独的一条。 */
+    public static void FeedRaw(byte[] laid) {
+        testFeed = true;
+        IntPtr p = Marshal.AllocHGlobal(laid.Length);
+        try {
+            Marshal.Copy(laid, 0, p, laid.Length);
+            Parse(p, (uint)laid.Length);
+        } finally {
+            Marshal.FreeHGlobal(p);
+            testFeed = false;
+        }
+    }
+
+    public static int HeaderSize() { return Marshal.SizeOf(typeof(RAWINPUTHEADER)); }
+
     public static string Layout() {
         return "RAWMOUSE size=" + Marshal.SizeOf(typeof(RAWMOUSE)) +
                " usButtonFlags@" + Marshal.OffsetOf(typeof(RAWMOUSE), "usButtonFlags") +
@@ -348,6 +406,7 @@ public class RawCap {
 
     public static void Reset() {
         _mflags = 0; _mod = 0; _keys.Clear();
+        KeyDumps.Clear();
         byte[] ignored = null;
         while (!Packets.IsEmpty) { Packets.TryDequeue(out ignored); }
     }
