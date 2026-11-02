@@ -162,7 +162,8 @@ async function poll() {
   set('rate', d.rate + ' 包/秒');
   set('sent', d.sent.total + ' 包 (接口 ' + d.sent.queued + ')');
   set('port', d.port || '没开串口');
-  set('cap', d.capture.registered ? '已注册 ' + d.capture.nInput + ' 个事件' : '未注册: ' + d.capture.stage);
+  const c = d.capture;
+  set('cap', c.registered ? ('鼠标 ' + c.mouse + ' · 键盘 ' + c.key + (c.unmapped ? ' · 没映射 ' + c.unmapped : '')) : '未注册: ' + c.stage);
   set('cursor', d.cursor ? d.cursor.x + ',' + d.cursor.y : '—');
   set('recenter', d.recenter);
   mini.textContent = d.rate + ' 包/秒 · ' + d.sent.total + ' 包 · 拉回中心 ' + d.recenter;

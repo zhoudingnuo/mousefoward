@@ -107,7 +107,9 @@ powershell -File tools/forward.ps1 -NoKeyboard    # 只转发鼠标
 
 `capture.ps1 -Live` 每 60 ms 读一次光标，上限 16.7 包/秒，而且没有键盘采集。`forward.ps1` 的采集线程不轮询：注册 Raw Input（`WM_INPUT` + `RIDEV_INPUTSINK`），用挂住的 `GetMessage` 处理，并 `timeBeginPeriod(1)`。以前是 `PeekMessage` + `Thread.Sleep(1)` 轮询，而系统计时精度默认是 15.625 ms，`Sleep(1)` 实际睡 15.58 ms，一圈 15.58 ms → 每秒只转 64 圈，事件要等到下一轮才处理（实测投 200 个消息：轮询平均 15.6 ms、最大 20 ms；改成挂住的 `GetMessage` 是 0 ms）。包率 = 系统事件率，天花板是鼠标自己的上报率（常见 125 Hz）。增量超过 ±127 拆成多个包（中间的包只带移动，最后一个带按键和滚轮），键盘按 VKey → HID usage 出 6KRO 快照。
 
-`-SelfTest` 只能验映射和拆分：这台机器上 `RIDEV_EXINPUTSINK` 被拒（错误 87），`SendInput` 注入的事件到不了 Raw Input，所以事件路径要靠真的操作鼠标键盘。
+`-SelfTest` 只能验映射和拆分：这台机器上 `RIDEV_EXINPUTSINK` 被拒（错误 87），`SendInput` 注入的事件到不了 Raw Input，所以事件路径要靠真的操作鼠标键盘。（顺带：`INPUT` 在 x64 上是 32 字节不是 20，`extraInfo` 是 `ULONG_PTR`，`type` 后面有 4 字节填充；按 20 传就是 87。改成 32 以后在这个进程里还是 87，所以注入根本发不出去。）
+
+所以真事件按类型分开数：收到的键盘事件、到了映射但 VKey 不在表里的、和发出去的包。按一次键就能看出断在哪一段——键盘数不动是事件没到窗口；键盘数动而"没映射"也动是那个键不在表里；两个都不动而包在出就是通了。这三个数在 `-SelfTest` 和 `/api/state`（`capture.mouse` / `capture.key` / `capture.unmapped`）都有，页面上也显示。
 
 桌面快捷方式指向这条。
 

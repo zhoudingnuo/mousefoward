@@ -73,7 +73,8 @@ Base：`http://localhost:8765`。请求和响应都是 JSON（UTF-8）。
   "screen": { "w": 1536, "h": 864 },
   "cursor": { "x": 1315, "y": 571 },
   "recenter": 1,
-  "capture": { "registered": true, "stage": "atom=50066 hwnd=6490342", "nInput": 1114 },
+  "capture": { "registered": true, "stage": "atom=50066 hwnd=6490342",
+               "nInput": 1114, "mouse": 1100, "key": 14, "unmapped": 0 },
   "sent": { "total": 553, "queued": 8 },
   "rate": 86.3,
   "quiet": 0.1,
@@ -84,6 +85,8 @@ Base：`http://localhost:8765`。请求和响应都是 JSON（UTF-8）。
 ```
 
 `status` 是上一次读到的状态行（没读到就是 `null`），`verdict` 是它的判断。字段含义见 README。
+
+`capture` 里三个数是分开的，因为键盘停在哪儿有三种可能，光看包数分不出来：`key` 是收到的真键盘事件数，`unmapped` 是事件到了但 VKey 不在映射表里的数，`sent` 是真正发出去的包。按下键以后：`key` 不动 = 事件没到窗口；`key` 动而 `unmapped` 也动 = 那个键不在表里；`key` 动、`unmapped` 不动、包在出 = 这条通了。自测里手摆的字节不算进这三个数。
 
 ## 从命令行调
 

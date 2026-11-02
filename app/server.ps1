@@ -112,6 +112,9 @@ function StateJson()
             registered = [bool]( [RawCap]::Registered )
             stage      = [RawCap]::Stage
             nInput     = [int]( [RawCap]::nInput )
+            mouse      = [int]( [RawCap]::nMouse )
+            key        = [int]( [RawCap]::nKeyEvents )
+            unmapped   = [int]( [RawCap]::nKeyUnmapped )
         }
         sent    = @{ total = [int]$script:total; queued = [int]$script:ctrl }
         rate    = [math]::Round( $script:rate, 1 )

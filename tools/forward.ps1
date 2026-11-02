@@ -162,6 +162,9 @@ try
         $r = '失败'
         if( [RawCap]::Registered ) { $r = '成功' }
         Write-Output ( '注册 ' + $r + ' ' + [RawCap]::Stage )
+        # 这半段是能真的验的: 这 0.5 秒里真动鼠标、真按键, 这里的数就会动。
+        # 键盘到底停在"事件没到"还是"映射没命中", 只有这两个数能分开。
+        Write-Output ( '真事件: 鼠标 ' + [RawCap]::nMouse + ' 键盘 ' + [RawCap]::nKeyEvents + ' 没映射 ' + [RawCap]::nKeyUnmapped + ' (下面摆的字节不算)' )
 
         Write-Output '映射:'
         $bad = 0

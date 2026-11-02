@@ -97,9 +97,15 @@ public class RawCap {
         t.Start();
     }
 
-    /* 每一步是走通了还是没走通, 不能靠"有没有包"猜。 */
+    /* 每一步是走通了还是没走通, 不能靠"有没有包"猜。
+     * 鼠标和键盘要分开数: 键盘停在哪儿只有三种可能 —— 事件没到、VKey 不在表里、包没写出去。
+     * 光看包数分不出是哪一种, 所以这里三个数都数。 */
     public static bool Registered = false;
     public static int nInput = 0;
+    public static int nMouse = 0;
+    public static int nKeyEvents = 0;
+    public static int nKeyUnmapped = 0;
+    static bool testFeed = false;              // 自测摆的字节不能算进"真事件"的数
     public static string Stage = "";
     public static IntPtr Hwnd = IntPtr.Zero;
 
@@ -172,8 +178,8 @@ public class RawCap {
             if (GetRawInputData(lParam, RID_INPUT, buf, ref size, (uint)Marshal.SizeOf(typeof(RAWINPUTHEADER))) == 0) return;
             RAWINPUTHEADER h = (RAWINPUTHEADER)Marshal.PtrToStructure(buf, typeof(RAWINPUTHEADER));
             IntPtr data = IntPtr.Add(buf, Marshal.SizeOf(typeof(RAWINPUTHEADER)));
-            if (h.dwType == 0) HandleMouse((RAWMOUSE)Marshal.PtrToStructure(data, typeof(RAWMOUSE)));
-            else if (h.dwType == 1) HandleKey((RAWKEYBOARD)Marshal.PtrToStructure(data, typeof(RAWKEYBOARD)));
+            if (h.dwType == 0) { nMouse++; HandleMouse((RAWMOUSE)Marshal.PtrToStructure(data, typeof(RAWMOUSE))); }
+            else if (h.dwType == 1) { nKeyEvents++; HandleKey((RAWKEYBOARD)Marshal.PtrToStructure(data, typeof(RAWKEYBOARD))); }
         } finally {
             Marshal.FreeHGlobal(buf);
         }
@@ -240,7 +246,7 @@ public class RawCap {
 
     static void HandleKey(RAWKEYBOARD k) {
         int usage = Usage(k.VKey);
-        if (usage < 0) return;
+        if (usage < 0) { if (!testFeed) nKeyUnmapped++; return; }
         ApplyKey(usage, (k.Flags & 1) == 0);   // 0 = down, 1 = up
     }
 
@@ -319,6 +325,7 @@ public class RawCap {
     /* 自测: 按 C 的布局手工摆字节, 走的是和真事件同一条路。
      * 这条本来能挡住 RAWMOUSE / RAWKEYBOARD 的布局错误(见 analysis.md 第七节)。 */
     public static void FeedImage(byte[] laid, int type) {
+        testFeed = true;
         IntPtr p = Marshal.AllocHGlobal(laid.Length);
         try {
             Marshal.Copy(laid, 0, p, laid.Length);
@@ -326,6 +333,7 @@ public class RawCap {
             else HandleKey((RAWKEYBOARD)Marshal.PtrToStructure(p, typeof(RAWKEYBOARD)));
         } finally {
             Marshal.FreeHGlobal(p);
+            testFeed = false;
         }
     }
 
