@@ -51,9 +51,13 @@ public class RawCap {
         public uint ulRawButtons; public int lLastX; public int lLastY; public uint ulExtraInformation;
     }
 
+    /* 真事件字节定下来的: 数据段是 16 字节, 不是文档上写的 20。
+     * MakeCode / Flags 是 USHORT(文档写的是 UINT), 所以 VKey 在数据段第 6 字节。
+     * 按 20 的结构读, VKey 读到的是第 10 字节 = 0, 所以每一个键都"没映射"。
+     * 真事件里 Message 就是 WM_KEYDOWN(0x100)/WM_KEYUP(0x101), 和 Flags 的 bit0 一致。 */
     [StructLayout(LayoutKind.Sequential)]
     struct RAWKEYBOARD {
-        public uint MakeCode; public uint Flags;
+        public ushort MakeCode; public ushort Flags;
         public ushort Reserved; public ushort VKey;
         public uint Message; public uint ExtraInformation;
     }

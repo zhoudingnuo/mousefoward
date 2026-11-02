@@ -439,14 +439,14 @@ typedef struct tagRAWMOUSE {
 
 C# 里按声明顺序排，`usButtonFlags` 落在偏移 2，读的是那 2 字节填充 —— 永远是 0。`lLastX` / `lLastY` 的偏移正好没变（12 / 16），所以移动照常用，只有按键读不到。这解释了为什么"移动能转，点击不能"。
 
-`RAWKEYBOARD` 同样写短了：真实的 `MakeCode` 和 `Flags` 是 `UINT`，`Reserved` / `VKey` 才是 `USHORT`。按声明顺序排，`VKey` 落在偏移 6（真实 `Flags` 的高半），所以真按键一个都进不来 —— 之前"键盘能用"是靠接口直接调 `ApplyKey`，不是靠真按键事件。
+`RAWKEYBOARD` 同样写短了：这一节当时把 `RAWKEYBOARD` 判错了：文档写 `MakeCode` / `Flags` 是 `UINT`，但实际头文件是 `USHORT`，数据段是 16 字节、`VKey` 在第 6 字节。真事件的字节对上了每一个字段（见第十一节），按 20 字节的结构读会把 `VKey` 读到第 10 字节，永远是 0，所以真按键一个都进不来 —— 之前"键盘能用"是靠接口直接调 `ApplyKey`，不是靠真按键事件。
 
 实测（手工按 C 的布局摆字节，用 `Marshal.OffsetOf` 对）：
 
 ```
 修之前: RAWMOUSE size=24 usButtonFlags@2 lLastX@12
 修之后: RAWMOUSE size=24 usButtonFlags@4 lLastX@12
-修之后: RAWKEYBOARD size=20 Flags@4 VKey@10
+修之后(错的): RAWKEYBOARD size=20 Flags@4 VKey@10  <- 真事件证明是 size=16 Flags@2 VKey@6
 ```
 
 `-SelfTest` 加了这一项：按 C 的布局手工摆一个"左键按下 + 移动 (5, -3)"和一个"按下 a"，走的是和真事件同一条路（`FeedImage` → `HandleMouse` / `HandleKey`）：
@@ -552,4 +552,46 @@ capture: { "mouse": 2727, "key": 150, "unmapped": 150 }
 - 读到的 VKey 是 0 → 这个设备报的 usage 系统映射不出 VK（不是表的问题）。
 
 这些计数和字节是进程里的，改代码以后必须重启进程才生效。
+
+## 11. 真事件的字节：数据段是 16 字节，VKey 在第 6 字节 —— 这就是"全都没映射"
+
+跑着的进程存下来的真键盘事件（`capture.dumps`），原样：
+
+```
+size=40 header=24 字节: 01 00 00 00 28 00 00 00 3F 00 01 00 00 00 00 00 01 00 00 00 00 00 00 00
+                          31 00 00 00 00 00 4E 00 00 01 00 00 00 00 00 00   -> VKey=0x00 usage=-1
+```
+
+`dwSize = 40`，头是 24，所以数据段是 **16 字节**，不是文档写的 20。按 16 字节解，每个字段都对得上：
+
+| 数据段偏移 | 字段 | 这条的值 |
+|---|---|---|
+| 0 | `MakeCode`（USHORT） | `0x31` |
+| 2 | `Flags`（USHORT） | 0 = 按下 |
+| 4 | `Reserved` | 0 |
+| 6 | **`VKey`（USHORT）** | **`0x4E` = 'N'** |
+| 8 | `Message`（UINT） | `0x100` = WM_KEYDOWN |
+| 12 | `ExtraInformation` | 0 |
+
+另一条是抬起：`Flags = 1`、`VKey = 0x49` = 'I'、`Message = 0x101` = WM_KEYUP。`wParam`（头的第 16 字节）和 `Message` 的 0x100/0x101 一致。
+
+所以第七节里"`MakeCode` / `Flags` 是 `UINT`"是错的：文档那么写，实际 `winuser.h` 是 `USHORT`，数据段 16 字节。按 20 字节的结构读，`VKey` 读到的是数据段第 10 字节（`ExtraInformation` 的前半），永远是 0 —— 每一个键都"没映射"。而这些键（N、I、Z）本来就在表里，表的问题只是第十节列的那几处。
+
+结构改成 16 字节以后，自测按第 6 字节摆，输出还是同一个包：
+
+```
+RAWKEYBOARD size=16 Flags@2 VKey@6
+包: AB 00 00 04 00 00 00 00 00 AF
+```
+
+跑着的进程还是旧编译的结构（`VKey@10`），要重启才生效。
+
+顺带把调用和转发分清楚：这两条现在都能验。调用（`POST /api/key`、`POST /api/mouse`）不经过 VK 映射也能走——给 `usage` 就直接用，给 `vk` 才查表，所以表错了只影响给 `vk` 的那部分。实测在跑着的服务上调：
+
+```
+POST /api/key  {"usage":4,"down":true}   -> {"usage":4,"queued":1}
+POST /api/key  {"vk":65,"down":false}    -> {"usage":4,"queued":1}
+POST /api/mouse {"dx":200,"dy":0,"buttons":1} -> {"queued":2}
+sent.total: 8506 -> 8510（4 个包真的写进了串口）
+```
 

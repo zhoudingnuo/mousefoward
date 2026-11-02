@@ -187,8 +187,9 @@ try
         if( -not $bad ) { Write-Output '  都对。' }
 
         # 结构布局: 按 C 的布局手工摆字节, 走的是和真事件同一条路。
-        # RAWMOUSE 的 union 是 4 字节对齐的, usFlags 后面有 2 字节填充; RAWKEYBOARD 的
-        # MakeCode / Flags 是 UINT。这两条以前都写短了(见 analysis.md 第七节)。
+        # RAWMOUSE 的 union 是 4 字节对齐的, usFlags 后面有 2 字节填充。RAWKEYBOARD 的
+        # MakeCode / Flags 是 USHORT(不是文档写的 UINT), 所以数据段是 16 字节、VKey 在第 6 字节。
+        # 这两条以前都写短了(见 analysis.md 第七节和第十节)。
         Write-Output '结构布局:'
         Write-Output ( '  ' + [RawCap]::Layout() )
         [RawCap]::Reset()
@@ -199,10 +200,10 @@ try
         [RawCap]::FeedImage( $m, 0 )
         while( $true ) { $pk = Take $q; if( -not $pk ) { break }; Write-Output ( '  包: ' + ( Hex $pk ) ) }
 
-        $k = New-Object -TypeName byte[] -ArgumentList 20
-        $k[10] = 0x41                                                 # VKey = 'a', Flags = 0 -> 按下
+        $k = New-Object -TypeName byte[] -ArgumentList 16
+        $k[6] = 0x41                                                 # VKey = 'a', Flags = 0 -> 按下
         [RawCap]::FeedImage( $k, 1 )
-        $k[4] = 1                                                    # Flags = 1 -> 抬起
+        $k[2] = 1                                                    # Flags = 1 -> 抬起
         [RawCap]::FeedImage( $k, 1 )
         while( $true ) { $pk = Take $q; if( -not $pk ) { break }; Write-Output ( '  包: ' + ( Hex $pk ) ) }
 
@@ -211,10 +212,10 @@ try
         Write-Output '整块(头+数据):'
         [RawCap]::Reset()
         $hs = [int]( [RawCap]::HeaderSize() )
-        $full = New-Object -TypeName byte[] -ArgumentList ( $hs + 20 )
+        $full = New-Object -TypeName byte[] -ArgumentList ( $hs + 16 )
         $full[0] = 1                                                  # dwType = keyboard
-        $full[4] = [byte]( $hs + 20 )                               # dwSize
-        $full[$hs + 10] = 0x41                                      # VKey = 'a'
+        $full[4] = [byte]( $hs + 16 )                               # dwSize = 40, 和真事件一样
+        $full[$hs + 6] = 0x41                                       # VKey = 'a'
         [RawCap]::FeedRaw( $full )
         while( $true ) { $pk = Take $q; if( -not $pk ) { break }; Write-Output ( '  包: ' + ( Hex $pk ) ) }
 
