@@ -235,6 +235,28 @@ try
         while( $true ) { $pk = Take $q; if( -not $pk ) { break }; Write-Output ( '  包: ' + ( Hex $pk ) ) }
         [RawCap]::Reset()
 
+        # 侧键: Raw Input 自己的位(中 0x0010 / X1 0x0040 / X2 0x0100)和线上格式
+        # (中 bit2 / X1 bit4 / X2 bit5)不是一回事。以前中的和 X1 都映射到 0x10,
+        # 结果中键被当成 X1 发出去。这条一条一条按 Raw Input 的位摆, 看线上是什么。
+        Write-Output '侧键(中 / X1 / X2 各自按下再释放):'
+        [RawCap]::Reset()
+        foreach( $p in @( @( 0x0010, '中' ), @( 0x0040, 'X1' ), @( 0x0100, 'X2' ) ) )
+        {
+            $f = New-Object -TypeName byte[] -ArgumentList 24
+            $f[4] = [byte]( $p[0] -band 0xFF )
+            $f[5] = [byte]( ( $p[0] -shr 8 ) -band 0xFF )      # usButtonFlags 是 USHORT
+            [RawCap]::FeedImage( $f, 0 )
+            $pk = Take $q
+            Write-Output ( '  ' + $p[1] + ' 按下 -> ' + ( Hex $pk ) )
+            $u = New-Object -TypeName byte[] -ArgumentList 24
+            $u[4] = [byte]( ( $p[0] -shl 1 ) -band 0xFF )
+            $u[5] = [byte]( ( ( $p[0] -shl 1 ) -shr 8 ) -band 0xFF )
+            [RawCap]::FeedImage( $u, 0 )
+            $pk = Take $q
+            Write-Output ( '  ' + $p[1] + ' 抬起 -> ' + ( Hex $pk ) )
+        }
+        [RawCap]::Reset()
+
         # 200 和 -160 都超过 127: 应该出 2 个包, 中间的包只带移动, 最后一个带滚轮。
         Write-Output '拆分(200, -160, 3):'
         [RawCap]::EmitSplit( 0, 200, -160, 3 )

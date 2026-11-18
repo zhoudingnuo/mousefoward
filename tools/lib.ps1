@@ -225,16 +225,22 @@ public class RawCap {
         int wheel = 0;
         bool changed = false;
 
-        if ((m.usButtonFlags & 0x0001) != 0) changed |= SetBit(0x01, true);
-        if ((m.usButtonFlags & 0x0002) != 0) changed |= SetBit(0x01, false);
-        if ((m.usButtonFlags & 0x0004) != 0) changed |= SetBit(0x02, true);
-        if ((m.usButtonFlags & 0x0008) != 0) changed |= SetBit(0x02, false);
-        if ((m.usButtonFlags & 0x0010) != 0) changed |= SetBit(0x10, true);
-        if ((m.usButtonFlags & 0x0020) != 0) changed |= SetBit(0x10, false);
-        if ((m.usButtonFlags & 0x0040) != 0) changed |= SetBit(0x10, true);
-        if ((m.usButtonFlags & 0x0080) != 0) changed |= SetBit(0x10, false);
-        if ((m.usButtonFlags & 0x0100) != 0) changed |= SetBit(0x20, true);
-        if ((m.usButtonFlags & 0x0200) != 0) changed |= SetBit(0x20, false);
+        /* 两套按钮位不能直接照搬。
+         * Raw Input 的 usButtonFlags: 左 0x0001/0x0002, 右 0x0004/0x0008,
+         * 中 0x0010/0x0020, 第四键(X1) 0x0040/0x0080, 第五键(X2) 0x0100/0x0200。
+         * 线上格式(板子那边): bit0 左, bit1 右, bit2 中, bit4 X1, bit5 X2 —— 中间空了一位。
+         * 以前中的 0x0010 和 X1 的 0x0040 都写成了 SetBit(0x10): 中键被当成 X1 发出去,
+         * X1 碰巧对, 所以只有侧键能过、中键不能。 */
+        if ((m.usButtonFlags & 0x0001) != 0) changed |= SetBit(0x01, true);   // 左按下
+        if ((m.usButtonFlags & 0x0002) != 0) changed |= SetBit(0x01, false);  // 左抬起
+        if ((m.usButtonFlags & 0x0004) != 0) changed |= SetBit(0x02, true);   // 右按下
+        if ((m.usButtonFlags & 0x0008) != 0) changed |= SetBit(0x02, false);  // 右抬起
+        if ((m.usButtonFlags & 0x0010) != 0) changed |= SetBit(0x04, true);   // 中按下
+        if ((m.usButtonFlags & 0x0020) != 0) changed |= SetBit(0x04, false);  // 中抬起
+        if ((m.usButtonFlags & 0x0040) != 0) changed |= SetBit(0x10, true);   // X1 按下
+        if ((m.usButtonFlags & 0x0080) != 0) changed |= SetBit(0x10, false);  // X1 抬起
+        if ((m.usButtonFlags & 0x0100) != 0) changed |= SetBit(0x20, true);   // X2 按下
+        if ((m.usButtonFlags & 0x0200) != 0) changed |= SetBit(0x20, false);  // X2 抬起
         if ((m.usButtonFlags & 0x0400) != 0) { wheel = (short)m.usButtonData / 120; changed = true; }
 
         if (m.lLastX == 0 && m.lLastY == 0 && !changed) return;

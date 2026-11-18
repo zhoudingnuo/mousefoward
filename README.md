@@ -13,7 +13,7 @@
 
 | 包 | 字节 | 说明 |
 |---|---|---|
-| 鼠标 | `0xAA` `flags` `dx` `dy` `wheel` `xor` | flags: bit0 左键 bit1 右键 bit2 中键 bit4 后退 bit5 前进 bit6 滚轮有效 |
+| 鼠标 | `0xAA` `flags` `dx` `dy` `wheel` `xor` | flags: bit0 左键 bit1 右键 bit2 中键 bit3 空 bit4 后退(X1) bit5 前进(X2) bit6 滚轮有效 |
 | 键盘 | `0xAB` `mod` `0` `key ×6` `xor` | HID usage page 0x07，6KRO 快照 |
 | 状态查询 | `'S'` | 板从 CDC IN 回一行 |
 
@@ -116,6 +116,8 @@ powershell -File tools/forward.ps1 -NoKeyboard    # 只转发鼠标
 前 5 个真键盘事件的原始字节存下来了（`capture.dumps`，页面显示最后一个的 VKey），按 16 字节解：`MakeCode`、`Flags`（0 按下 / 1 抬起）、`Reserved`、`VKey`、`Message`（`WM_KEYDOWN` / `WM_KEYUP`）、`ExtraInformation`，每个字段都对得上。这些计数和字节是进程里的，改代码以后必须重启进程才生效。
 
 调用（主动控制）和转发是分开的两条，现在都能验：`POST /api/key` 给 `usage` 就直接用、给 `vk` 才查表，所以表错了只影响给 `vk` 的那部分；`POST /api/mouse` 不查表。实测在跑着的服务上调，4 个包真的写进了串口（`sent.total` 8506 → 8510）。接口文档见 `api.md`。
+
+侧键（X1/X2）现在能转，之前是两端各错一处。线上 flags 的 bit4/bit5 和 HID 报告里连续的按钮位（bit3/bit4）不是一回事，固件原来直接 `& 0x3F` 照搬，X1 被对面认成 X2、X2 落到填充位被丢掉；采集端又把中键和 X1 都写成了同一个位，中键被当成 X1 发出去。两边都改成显式重排，自测里中 / X1 / X2 分别出 `AA 04 …` / `AA 10 …` / `AA 20 …`（见 `analysis.md` 第十二节）。
 
 桌面快捷方式指向这条。
 

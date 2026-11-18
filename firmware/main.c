@@ -8,6 +8,8 @@
  *
  * 协议 (字节流, 首字节区分包类型):
  *   鼠标 [0xAA][flags][dx][dy][wheel][xor]
+ *        flags: bit0 左, bit1 右, bit2 中, bit4 X1(后退), bit5 X2(前进), bit6 = 这一包带滚轮
+ *        注意 bit3 空着, 和 HID 报告里连续排的按钮位不一样, 转发时要重排(见下面)。
  *   键盘 [0xAB][mod][0][key x6][xor]
  *   'S'  状态查询, 板从 CDC IN 回一行
  *
@@ -187,7 +189,15 @@ int main( void )
         {
             if( rx_pkt[ 0 ] == PKG_MS )
             {
-                report[ 0 ] = rx_pkt[ 1 ] & 0x3F;                              /* 按钮 */
+                /* 两边按钮位的排法不一样, 不能直接照搬。
+                 * 线上: bit0 左, bit1 右, bit2 中, bit4 X1(后退), bit5 X2(前进), bit3 空着。
+                 * HID 报告: 按钮是连续排的 —— bit0 左, bit1 右, bit2 中, bit3 = 按钮4(X1), bit4 = 按钮5(X2)。
+                 * 以前是 & 0x3F 直接搬: X1 落到 bit4, 那边按描述符认成按钮5 = X2;
+                 * X2 落到 bit5, 超出描述符声明的 5 个按钮, 被主机当填充丢掉。
+                 * 结果就是侧键一个是错的一个没反应。这里重新排一下。 */
+                report[ 0 ] = rx_pkt[ 1 ] & 0x07;                              /* 左/右/中 */
+                if( rx_pkt[ 1 ] & 0x10 ) report[ 0 ] |= 0x08;                  /* X1 -> 按钮4 */
+                if( rx_pkt[ 1 ] & 0x20 ) report[ 0 ] |= 0x10;                  /* X2 -> 按钮5 */
                 report[ 1 ] = rx_pkt[ 2 ];                                     /* X */
                 report[ 2 ] = rx_pkt[ 3 ];                                     /* Y */
                 report[ 3 ] = ( rx_pkt[ 1 ] & 0x40 ) ? rx_pkt[ 4 ] : 0;       /* 滚轮 */
